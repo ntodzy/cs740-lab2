@@ -166,6 +166,10 @@ AprxFairQueue::receivePacket(Packet &pkt)
     _queuesize += pkt.size();
     _nPackets += 1;
 
+    if (_logger) {
+        _logger->logQueue(*this, QueueLogger::PKT_ENQUEUE, pkt);
+    }
+
     // Update the sketch to reflect new bytes.
     for (unsigned int i = 0; i < _cfg.nHash; i++) {
         uint64_t index = hashFlow(i, flowid) % _cfg.nBucket;

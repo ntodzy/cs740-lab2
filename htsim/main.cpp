@@ -55,6 +55,10 @@ main(int argc,
     Clock c;
     while (eventlist.doNextEvent()) {}
 
+    if (expt == 2) {
+        finish_conga_testbed();
+    }
+
     cerr << "\nExiting successfully!" << endl;
     return 0;
 }

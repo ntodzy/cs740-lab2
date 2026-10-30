@@ -100,6 +100,10 @@ StocFairQueue::receivePacket(Packet &pkt)
     _queuesize += pkt.size();
     _nPackets += 1;
 
+    if (_logger) {
+        _logger->logQueue(*this, QueueLogger::PKT_ENQUEUE, pkt);
+    }
+
     // If FIFO queue wasn't active, make it active.
     if (!_isActive[queue]) {
         _isActive[queue] = true;

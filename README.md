@@ -120,13 +120,13 @@ data-mining distributions, the built-in workload means replace `--flowsize`.
 
 #### Experiment 2: CONGA
 
-Experiment 2 now builds the complete leaf/core topology and uses a random
-equal-cost core as its initial ECMP baseline. CONGA table-driven selection is
+Experiment 2 builds the complete leaf/core topology and uses a deterministic
+hash to select an equal-cost core per flow. CONGA table-driven selection is
 still tracked in `TODO.md`.
 
 The route callback captures a `shared_ptr<LoadBalancer>` by value. The
 `EcmpLoadBalancer` implementation in `htsim/load-balancers/ecmp.*` owns the
-current random uplink policy; `htsim/load-balancers/load-balancer.h` defines
+current hash-based uplink policy; `htsim/load-balancers/load-balancer.h` defines
 the abstract interface. Add future policies alongside ECMP in that directory.
 
 | Flag | Default | Description |
@@ -134,6 +134,7 @@ the abstract interface. Add future policies alongside ECMP in that directory.
 | `--duration` | `5` | Simulation duration in seconds. |
 | `--lb` | `ecmp` | `ecmp` selects the ECMP baseline; `conga` exits with a not-implemented error. |
 | `--small` | `0` | `1` uses 2 cores, 2 leaves, and 2 servers per leaf for debugging; `0` uses the required full topology. |
+| `--routingseed` | value of `--rngseed` | Independent seed for load-balancer choices and future tie-breaking. |
 | `--utilization` | `0.1` | Offered load relative to aggregate server-facing capacity. |
 | `--flowsize` | `100000` | Average flow size in bytes. |
 | `--linkdelay` | `0.1` | Propagation delay per directional pipe in microseconds. |
@@ -149,6 +150,40 @@ For a quick topology smoke test, run from `htsim/`:
 ```
 
 Offered load scales with the number of active servers in either topology.
+
+In experiment 2, `--rngseed` controls traffic (arrival times, sizes, start
+jitter, and endpoints). Load balancers use a separate `std::mt19937` engine
+seeded by `--routingseed` for randomized policies; ECMP directly hashes the
+source host, destination host, generator flow sequence ID, and routing seed.
+Repeated requests for the same flow select the same core regardless of call
+order. Future policies must use the separate engine for tie-breaking
+instead of `rand()`/`drand()`. Changing the routing seed or number of policy
+draws therefore leaves the traffic demands unchanged. Keep traffic seed,
+topology, workload, load, and duration identical when comparing policies.
+Experiment 3 retains its original shared random stream.
+
+Run `bash htsim/tests/test-routing-randomness.sh` from the repository root to
+verify engine isolation, repeatable route choices, and identical demands across
+routing seeds for all four workloads. Test artifacts are written under `/tmp`.
+
+Experiment 2 also writes these files alongside the `--logfile` prefix:
+
+| File suffix | Contents |
+|---|---|
+| `.routes.csv` | Flow sequence ID (matching the number in `srcN`), source/destination host, and chosen core; `-1` means same-leaf traffic. |
+| `.links.csv` | Each directional queue's rate, enqueue/departure/drop packet and byte counts, and measured utilization fraction. Counters include data and ACK packets. |
+| `.summary.csv` | Generated, completed, and incomplete flow counts, plus `route_violations` (fabric departures using a different core than earlier packets/ACKs of that flow; expected zero). |
+
+Statistics are flushed after the simulation event loop. Utilization is
+departed bytes × 8 divided by link rate × elapsed simulation time; generated
+flows include those scheduled to start after the cutoff due to start jitter.
+CSV output adds aggregate counters without periodic queue sampling.
+
+After building, run `node htsim/tests/test-ecmp.mjs` from the repository root
+to verify the full topology, all 12 cores carrying traffic, fixed-core packet
+and ACK behavior, count consistency, all queue types, and identical outputs
+on repeated runs. The hash test also checks 120,000 choices across 12 cores
+against an 8% per-core deviation bound around an even split.
 
 #### Experiment 3: fat tree
 

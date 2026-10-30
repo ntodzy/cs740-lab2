@@ -46,6 +46,8 @@ class FlowGenerator : public EventSource
          * (optionally) generate a new flow. */
         void finishFlow(uint32_t flow_id);
         void dumpLiveFlows();
+        uint64_t generatedFlows() const { return _flowsGenerated; }
+        uint64_t liveFlows() const { return _liveFlows.size(); }
 
     private:
         // Creates a flow in the simulation.

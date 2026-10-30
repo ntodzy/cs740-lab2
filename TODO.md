@@ -16,7 +16,7 @@ This checklist orders work by dependency. Keep ECMP and CONGA on the same topolo
 - [x] Run `make -C htsim` and preserve warning-free behavior for new code.
 - [x] Smoke-test experiments 1 and 3 with short durations.
 - [x] Add an `--lb=ecmp|conga` argument to experiment 2 (CONGA currently reports not implemented).
-- [ ] Separate traffic randomness from routing/tie-break randomness so both modes receive identical demands.
+- [x] Separate experiment 2 traffic randomness (`--rngseed`) from routing/tie-break randomness (`--routingseed`); load balancers own an independent engine.
 - [x] Add `--small=1` for fast debugging: 2 cores, 2 leaves, and 2 servers per leaf.
 
 **Done when:** the same seed produces identical `(start, source, destination, size)` demands in both modes.
@@ -34,12 +34,15 @@ This checklist orders work by dependency. Keep ECMP and CONGA on the same topolo
 
 ## 3. Implement the ECMP comparison
 
-- [ ] Select one core deterministically per flow from stable flow/endpoint data.
-- [ ] Keep all packets and ACKs of a flow on the constructed forward/reverse routes.
-- [ ] Verify path distribution across all 12 cores under many flows.
-- [ ] Save basic link-use and completion-count statistics.
+- [x] Select one core deterministically per flow from stable source/destination host IDs, flow sequence ID, and routing seed.
+- [x] Keep all packets and ACKs of a flow on the constructed forward/reverse routes; check fabric core consistency at runtime.
+- [x] Verify path distribution across all 12 cores with a 120,000-flow hash test and actual full-topology traffic.
+- [x] Save basic link-use and completion-count statistics in `.links.csv`, `.routes.csv`, and `.summary.csv` beside the log prefix.
 
 **Done when:** ECMP results are repeatable and provide a working baseline on the final topology.
+
+Verified by `bash htsim/tests/test-routing-randomness.sh` and
+`node htsim/tests/test-ecmp.mjs` (after building).
 
 ## 4. Add CONGA packet metadata
 

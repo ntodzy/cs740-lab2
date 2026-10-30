@@ -8,6 +8,7 @@
 #include "pipe.h"
 #include "test.h"
 #include "load-balancers/ecmp.h"
+#include "experiment-stats.h"
 
 #include <memory>
 
@@ -46,13 +47,18 @@ Pipe  *pLeafCore[N_LEAF][N_CORE] = {};
 Queue *qCoreLeaf[N_CORE][N_LEAF] = {};
 Pipe  *pCoreLeaf[N_CORE][N_LEAF] = {};
 
+std::shared_ptr<ExperimentStats> runStats;
+FlowGenerator *runGenerator = NULL;
+
 void createQueue(const std::string &queueType,
                  Queue *&queue,
                  linkspeed_bps speed,
                  mem_b buffer);
-void nameObject(Logged &object, const std::string &name, Logfile &logfile);
+void nameObject(Logged &object, const std::string &name, Logfile &logfile,
+                linkspeed_bps speed = LEAF_SPEED, int core = -1);
 void generateRandomRoute(LoadBalancer &loadBalancer,
                          const TopologyConfig &topology,
+                         ExperimentStats &stats,
                          route_t *&fwd,
                          route_t *&rev,
                          uint32_t &src,
@@ -75,6 +81,7 @@ conga_testbed(const ArgList &args, Logfile &logfile)
     string flowDist = "uniform";
     string lb = "ecmp";
     uint32_t small = 0;
+    uint32_t trafficSeed = 1729;
 
     parseInt(args, "duration", duration);
     parseInt(args, "flowsize", avgFlowSize);
@@ -85,6 +92,10 @@ conga_testbed(const ArgList &args, Logfile &logfile)
     parseString(args, "flowdist", flowDist);
     parseString(args, "lb", lb);
     parseInt(args, "small", small);
+    parseInt(args, "rngseed", trafficSeed);
+    // Independent engine even when the two seeds have the same numeric value.
+    uint32_t routingSeed = trafficSeed;
+    parseInt(args, "routingseed", routingSeed);
 
     if (small > 1) {
         cerr << "small must be 0 or 1\n";
@@ -101,7 +112,7 @@ conga_testbed(const ArgList &args, Logfile &logfile)
 
     shared_ptr<LoadBalancer> loadBalancer;
     if (lb == "ecmp") {
-        loadBalancer = make_shared<EcmpLoadBalancer>(topology.cores);
+        loadBalancer = make_shared<EcmpLoadBalancer>(topology.cores, routingSeed);
     } else if (lb == "conga") {
         cerr << "Load balancer 'conga' is not implemented yet\n";
         exit(1);
@@ -110,13 +121,17 @@ conga_testbed(const ArgList &args, Logfile &logfile)
         exit(1);
     }
 
+    string statsPrefix = "data/htsim-log";
+    parseString(args, "logfile", statsPrefix);
+    runStats = make_shared<ExperimentStats>(statsPrefix);
+
     // Fully connect the active leaves and cores.
     for (uint32_t leaf = 0; leaf < topology.leaves; leaf++) {
         for (uint32_t core = 0; core < topology.cores; core++) {
             createQueue(queueType, qLeafCore[leaf][core], CORE_SPEED, LEAF_BUFFER);
             nameObject(*qLeafCore[leaf][core],
                        "q-leaf-core-" + to_string(leaf) + "-" + to_string(core),
-                       logfile);
+                       logfile, CORE_SPEED, core);
             pLeafCore[leaf][core] = new Pipe(timeFromUs(linkDelay));
             nameObject(*pLeafCore[leaf][core],
                        "p-leaf-core-" + to_string(leaf) + "-" + to_string(core),
@@ -125,7 +140,7 @@ conga_testbed(const ArgList &args, Logfile &logfile)
             createQueue(queueType, qCoreLeaf[core][leaf], CORE_SPEED, CORE_BUFFER);
             nameObject(*qCoreLeaf[core][leaf],
                        "q-core-leaf-" + to_string(core) + "-" + to_string(leaf),
-                       logfile);
+                       logfile, CORE_SPEED, core);
             pCoreLeaf[core][leaf] = new Pipe(timeFromUs(linkDelay));
             nameObject(*pCoreLeaf[core][leaf],
                        "p-core-leaf-" + to_string(core) + "-" + to_string(leaf),
@@ -184,25 +199,29 @@ conga_testbed(const ArgList &args, Logfile &logfile)
     // capacity. The shared server-to-leaf queues enforce each host's link rate.
     linkspeed_bps flowRate = llround(utilization * LEAF_SPEED * topology.nodes());
     // Capture ownership by value: the policy must survive this setup function.
-    route_gen_t fnGenerateRoute = [loadBalancer, topology](route_t *&fwd, route_t *&rev,
+    auto stats = runStats;
+    route_gen_t fnGenerateRoute = [loadBalancer, topology, stats](route_t *&fwd, route_t *&rev,
                                                uint32_t &src, uint32_t &dst) {
-        conga::generateRandomRoute(*loadBalancer, topology, fwd, rev, src, dst);
+        conga::generateRandomRoute(*loadBalancer, topology, *stats, fwd, rev, src, dst);
     };
     FlowGenerator *flowGenerator = new FlowGenerator(endpoint,
                                                       fnGenerateRoute,
                                                       flowRate,
                                                       avgFlowSize,
                                                       distribution);
+    runGenerator = flowGenerator;
     flowGenerator->setTimeLimits(timeFromUs(1), timeFromSec(duration) - 1);
     EventList::Get().setEndtime(timeFromSec(duration));
 
     cerr << "CONGA topology: " << topology.cores << " cores, " << topology.leaves
          << " leaves, " << topology.nodes() << " servers" << endl;
+    cerr << "Traffic seed: " << trafficSeed << ", routing seed: " << routingSeed << endl;
 }
 
 void
 conga::generateRandomRoute(LoadBalancer &loadBalancer,
                            const TopologyConfig &topology,
+                           ExperimentStats &stats,
                            route_t *&fwd,
                            route_t *&rev,
                            uint32_t &src,
@@ -229,9 +248,11 @@ conga::generateRandomRoute(LoadBalancer &loadBalancer,
     // LOAD BALANCER: choose the source leaf's uplink (identified by core).
     // Delegate policy to the selected implementation; routes stay shared.
     // Same-leaf traffic needs no fabric uplink selection.
+    int selectedCore = -1; // Same-leaf traffic has no fabric hop.
     if (srcLeaf != dstLeaf) {
-        uint32_t core = loadBalancer.chooseUplink(srcLeaf, dstLeaf);
+        uint32_t core = loadBalancer.chooseUplink(src, dst, stats.nextFlowId());
         assert(core < topology.cores);
+        selectedCore = core;
 
         // Install the selected path for all data packets and reverse ACKs
         // in this flow (the lab treats a whole flow as one flowlet).
@@ -250,6 +271,7 @@ conga::generateRandomRoute(LoadBalancer &loadBalancer,
     fwd->push_back(pLeafServer[dstLeaf][dstServer]);
     rev->push_back(qLeafServer[srcLeaf][srcServer]);
     rev->push_back(pLeafServer[srcLeaf][srcServer]);
+    stats.recordRoute(src, dst, selectedCore);
 }
 
 void
@@ -258,18 +280,17 @@ conga::createQueue(const string &queueType,
                    linkspeed_bps speed,
                    mem_b buffer)
 {
-    // Per-queue sampling is intentionally disabled here: this topology has
-    // 2,112 directional queues and sampling every queue creates very large logs.
+    // Aggregate counters only; avoid periodic sampling of 2,112 queues.
     if (queueType == "fq") {
-        queue = new FairQueue(speed, buffer, NULL);
+        queue = new FairQueue(speed, buffer, runStats.get());
     } else if (queueType == "afq") {
-        queue = new AprxFairQueue(speed, buffer, NULL);
+        queue = new AprxFairQueue(speed, buffer, runStats.get());
     } else if (queueType == "pq") {
-        queue = new PriorityQueue(speed, buffer, NULL);
+        queue = new PriorityQueue(speed, buffer, runStats.get());
     } else if (queueType == "sfq") {
-        queue = new StocFairQueue(speed, buffer, NULL);
+        queue = new StocFairQueue(speed, buffer, runStats.get());
     } else if (queueType == "droptail") {
-        queue = new Queue(speed, buffer, NULL);
+        queue = new Queue(speed, buffer, runStats.get());
     } else {
         cerr << "Unknown queue type: " << queueType << endl;
         exit(1);
@@ -277,8 +298,19 @@ conga::createQueue(const string &queueType,
 }
 
 void
-conga::nameObject(Logged &object, const string &name, Logfile &logfile)
+conga::nameObject(Logged &object, const string &name, Logfile &logfile,
+                   linkspeed_bps speed, int core)
 {
     object.setName(name);
     logfile.writeName(object);
+    Queue *queue = dynamic_cast<Queue*>(&object);
+    if (queue != NULL) {
+        runStats->registerLink(*queue, speed, core);
+    }
+}
+
+// Flush after the event loop, including all events at the simulation cutoff.
+void finish_conga_testbed()
+{
+    conga::runStats->write(*conga::runGenerator, EventList::Get().now());
 }

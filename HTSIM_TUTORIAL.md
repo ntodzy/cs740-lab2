@@ -80,7 +80,7 @@ Packets are recycled through `PacketDB`. Any new metadata must therefore be init
 
 The random route callback chooses source/destination hosts and constructs the entire path. Consequently, the present framework chooses a path **once per flow**. That directly supports the lab simplification “one flow is one flowlet”: select a CONGA uplink in the callback and keep every packet of that flow on the returned route.
 
-Be careful with reproducibility. Endpoint selection, arrivals, workload sizes, and current route choices all consume the global `rand()` stream. ECMP and CONGA must not perturb the traffic workload differently. Use separate traffic/routing random streams, deterministic tie-breaking, or a pre-generated demand trace that includes source and destination.
+In experiment 2, endpoint selection, arrivals, start jitter, and workload sizes use the traffic `rand()` stream seeded by `--rngseed`. ECMP hashes source/destination host IDs, the generator flow sequence ID, and `--routingseed` (defaulting to the traffic seed). Load balancers also own an independent `std::mt19937` engine for future randomized policies and CONGA tie-breaking. This separation keeps demands identical when policies consume different numbers of random values. Experiment 3 still uses its original shared stream. Regression checks are available via `bash htsim/tests/test-routing-randomness.sh` and `node htsim/tests/test-ecmp.mjs` from the repository root.
 
 ## 6. Reading the existing topology example
 
@@ -127,6 +127,8 @@ Define initialization, quantization, tie-breaking, feedback selection, and stale
 ## 8. Measurement and lab methodology
 
 Completed TCP flows already print a line containing size, start time, end time, and FCT in microseconds. Live flows are dumped at the generator cutoff. The `.trace` file is a packed binary `Record` stream; `.id` maps numeric object IDs to names. For reliable plotting, add a stable CSV output or parser rather than scraping mixed diagnostic output indefinitely.
+
+Experiment 2 now also saves aggregate `.links.csv`, `.routes.csv`, and `.summary.csv` files using the log prefix. These provide link counters/utilization, per-flow path selections, completed/incomplete counts, and a runtime core-consistency check. Completed-flow FCTs remain in the text output.
 
 Run identical ECMP and CONGA trials for:
 

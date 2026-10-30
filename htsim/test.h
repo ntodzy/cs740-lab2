@@ -15,6 +15,7 @@ typedef std::unordered_map<std::string,std::string> ArgList;
  */
 void single_link_simulation(const ArgList &, Logfile &);
 void conga_testbed(const ArgList &, Logfile &);
+void finish_conga_testbed();
 void fat_tree_testbed(const ArgList &, Logfile &);
 
 inline int 
