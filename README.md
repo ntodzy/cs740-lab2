@@ -120,9 +120,19 @@ data-mining distributions, the built-in workload means replace `--flowsize`.
 
 #### Experiment 2: CONGA
 
-The CONGA testbed is currently an implementation stub and does not parse
-experiment-specific flags yet. Planned options, including ECMP/CONGA mode and
-workload controls, are tracked in `TODO.md`.
+Experiment 2 now builds the complete leaf/core topology and uses a random
+equal-cost core as its initial ECMP baseline. CONGA table-driven selection is
+still tracked in `TODO.md`.
+
+| Flag | Default | Description |
+|---|---:|---|
+| `--duration` | `5` | Simulation duration in seconds. |
+| `--utilization` | `0.1` | Offered load relative to aggregate server-facing capacity. |
+| `--flowsize` | `100000` | Average flow size in bytes. |
+| `--linkdelay` | `0.1` | Propagation delay per directional pipe in microseconds. |
+| `--flowdist` | `uniform` | `uniform`, `pareto`, `enterprise`, or `datamining`. |
+| `--queue` | `droptail` | Fabric/server-downlink queue: `droptail`, `fq`, `afq`, `pq`, or `sfq`. |
+| `--endhost` | `dctcp` | `tcp`, `dctcp`, `timely`, or `pp`. |
 
 #### Experiment 3: fat tree
 
@@ -156,6 +166,33 @@ workload controls, are tracked in `TODO.md`.
 - **The following pieces from CONGA are not required:**
   - The flowlet, so you can just assume the flow will work as flowlet in CONGA paper.
   - VXLAN tunneling: you don’t have to follow the exact header definition mentioned in the paper as long as you can encode the necessary information.
+
+### Files to edit for the CONGA implementation
+
+The expected implementation touches the following files. Keep the ECMP and
+CONGA paths in the same experiment so they share topology and workload code.
+
+| File | Required changes |
+|---|---|
+| `htsim/test_conga_testbed.cpp` | Extend the implemented 12-core/24-leaf/768-server topology and route generator with selectable ECMP and CONGA policies. |
+| `htsim/network.h` | Add packet-carried CONGA metadata such as source/destination leaf, `LBTag`, `CE`, feedback tag/metric, and validity flags. |
+| `htsim/network.cpp` | Reset every CONGA metadata field in `Packet::set()` because packet objects are pooled and reused. |
+| `htsim/tcp.cpp` | Preserve or attach the feedback information required on reverse ACKs before the received data packet is freed. |
+
+The following new files are recommended to keep CONGA logic out of generic
+simulator components:
+
+| New file | Responsibility |
+|---|---|
+| `htsim/leafswitch.h`, `htsim/leafswitch.cpp` | Store Congestion-To-Leaf and Congestion-From-Leaf tables, process forward/feedback metadata, and choose the minimum-congestion uplink. |
+| `htsim/congaqueue.h`, `htsim/congaqueue.cpp` | Maintain a simulation-time DRE-like link metric and update packet `CE` with the maximum congestion seen. |
+
+Depending on the measurement design, also update `htsim/flow-generator.h/.cpp`
+to preserve demand information or write machine-readable flow records, and
+`htsim/tcp.h/.cpp` to emit final FCT data. `htsim/test.h` already registers
+experiment 2, so it only needs editing if the experiment interface changes.
+The Makefile uses `$(wildcard *.cpp)`, so new `.cpp` files in `htsim/` are
+compiled automatically without listing them manually.
 
 ## Part 3: Performance Report
 

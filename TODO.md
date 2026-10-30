@@ -23,12 +23,12 @@ This checklist orders work by dependency. Keep ECMP and CONGA on the same topolo
 
 ## 2. Build the leaf/core topology
 
-- [ ] Replace the stub in `htsim/test_conga_testbed.cpp` with directional host–leaf and leaf–core queue/pipe arrays.
-- [ ] Create 12 cores, 24 leaves, and 768 host IDs without duplicate attachments.
-- [ ] Use 10 Gb/s host links and 40 Gb/s fabric links.
-- [ ] Name queues/pipes and register them with `Logfile`.
-- [ ] Generate correct forward and reverse routes for same-leaf and cross-leaf traffic.
-- [ ] Set workload, duration, utilization, transport, and RNG parameters from `ArgList`.
+- [x] Replace the stub in `htsim/test_conga_testbed.cpp` with directional host–leaf and leaf–core queue/pipe arrays.
+- [x] Create 12 cores, 24 leaves, and 768 host IDs without duplicate attachments.
+- [x] Use 10 Gb/s host links and 40 Gb/s fabric links.
+- [x] Name queues/pipes and register them with `Logfile`.
+- [x] Generate correct forward and reverse routes for same-leaf and cross-leaf traffic.
+- [x] Set workload, duration, utilization, transport, and RNG parameters from `ArgList`.
 
 **Done when:** every host pair is reachable and assertions confirm each leaf has 32 hosts and 12 core links.
 
