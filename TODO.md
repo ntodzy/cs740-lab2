@@ -13,11 +13,11 @@ This checklist orders work by dependency. Keep ECMP and CONGA on the same topolo
 
 ## 1. Establish a reproducible baseline
 
-- [ ] Run `make -C htsim` and preserve warning-free behavior for new code.
-- [ ] Smoke-test experiments 1 and 3 with short durations.
-- [ ] Add an `--lb=ecmp|conga` argument to experiment 2.
+- [x] Run `make -C htsim` and preserve warning-free behavior for new code.
+- [x] Smoke-test experiments 1 and 3 with short durations.
+- [x] Add an `--lb=ecmp|conga` argument to experiment 2 (CONGA currently reports not implemented).
 - [ ] Separate traffic randomness from routing/tie-break randomness so both modes receive identical demands.
-- [ ] Add a small topology mode (for example `--small=1`) for fast debugging.
+- [x] Add `--small=1` for fast debugging: 2 cores, 2 leaves, and 2 servers per leaf.
 
 **Done when:** the same seed produces identical `(start, source, destination, size)` demands in both modes.
 

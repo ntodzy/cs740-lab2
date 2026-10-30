@@ -15,7 +15,7 @@ DEPFLAGS = -MT $@ -MMD -MP -MF $(DEPDIR)/$*.Td
 POSTCOMPILE = @mv -f $(DEPDIR)/$*.Td $(DEPDIR)/$*.d && touch $@
 
 EXEC = htsim
-SRCS = $(wildcard *.cpp)
+SRCS = $(wildcard *.cpp load-balancers/*.cpp)
 OBJS = $(SRCS:%.cpp=$(OBJDIR)/%.o)
 
 $(EXEC): $(OBJS)
@@ -23,6 +23,7 @@ $(EXEC): $(OBJS)
 
 $(OBJS): $(OBJDIR)/%.o: %.cpp
 $(OBJS): $(OBJDIR)/%.o: %.cpp $(DEPDIR)/%.d
+	@mkdir -p $(dir $@) $(dir $(DEPDIR)/$*.Td)
 	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -c $< -o $@
 	$(POSTCOMPILE)
 

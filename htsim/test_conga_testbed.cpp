@@ -7,13 +7,24 @@
 #include "flow-generator.h"
 #include "pipe.h"
 #include "test.h"
+#include "load-balancers/ecmp.h"
+
+#include <memory>
 
 namespace conga {
 
 const uint32_t N_CORE = 12;
 const uint32_t N_LEAF = 24;
 const uint32_t N_SERVER = 32; // Per leaf.
-const uint32_t N_NODES = N_LEAF * N_SERVER;
+
+// Arrays below retain full-topology capacity; only active ports are created.
+struct TopologyConfig {
+    uint32_t cores;
+    uint32_t leaves;
+    uint32_t serversPerLeaf;
+
+    uint32_t nodes() const { return leaves * serversPerLeaf; }
+};
 
 const uint64_t LEAF_BUFFER = 512000;
 const uint64_t CORE_BUFFER = 1024000;
@@ -40,7 +51,9 @@ void createQueue(const std::string &queueType,
                  linkspeed_bps speed,
                  mem_b buffer);
 void nameObject(Logged &object, const std::string &name, Logfile &logfile);
-void generateRandomRoute(route_t *&fwd,
+void generateRandomRoute(LoadBalancer &loadBalancer,
+                         const TopologyConfig &topology,
+                         route_t *&fwd,
                          route_t *&rev,
                          uint32_t &src,
                          uint32_t &dst);
@@ -60,6 +73,8 @@ conga_testbed(const ArgList &args, Logfile &logfile)
     string queueType = "droptail";
     string endHost = "dctcp";
     string flowDist = "uniform";
+    string lb = "ecmp";
+    uint32_t small = 0;
 
     parseInt(args, "duration", duration);
     parseInt(args, "flowsize", avgFlowSize);
@@ -68,16 +83,36 @@ conga_testbed(const ArgList &args, Logfile &logfile)
     parseString(args, "queue", queueType);
     parseString(args, "endhost", endHost);
     parseString(args, "flowdist", flowDist);
+    parseString(args, "lb", lb);
+    parseInt(args, "small", small);
+
+    if (small > 1) {
+        cerr << "small must be 0 or 1\n";
+        exit(1);
+    }
+    const TopologyConfig topology = small
+        ? TopologyConfig{2, 2, 2}
+        : TopologyConfig{N_CORE, N_LEAF, N_SERVER};
 
     if (duration == 0 || utilization <= 0 || linkDelay < 0) {
         cerr << "duration and utilization must be positive; linkdelay cannot be negative\n";
         exit(1);
     }
 
-    // Connect each of the 24 leaves to all 12 cores. Each core therefore uses
-    // all 24 of its 40 Gbps ports, and each leaf uses all 12 uplink ports.
-    for (uint32_t leaf = 0; leaf < N_LEAF; leaf++) {
-        for (uint32_t core = 0; core < N_CORE; core++) {
+    shared_ptr<LoadBalancer> loadBalancer;
+    if (lb == "ecmp") {
+        loadBalancer = make_shared<EcmpLoadBalancer>(topology.cores);
+    } else if (lb == "conga") {
+        cerr << "Load balancer 'conga' is not implemented yet\n";
+        exit(1);
+    } else {
+        cerr << "Unknown load balancer: " << lb << "; expected ecmp or conga\n";
+        exit(1);
+    }
+
+    // Fully connect the active leaves and cores.
+    for (uint32_t leaf = 0; leaf < topology.leaves; leaf++) {
+        for (uint32_t core = 0; core < topology.cores; core++) {
             createQueue(queueType, qLeafCore[leaf][core], CORE_SPEED, LEAF_BUFFER);
             nameObject(*qLeafCore[leaf][core],
                        "q-leaf-core-" + to_string(leaf) + "-" + to_string(core),
@@ -98,9 +133,9 @@ conga_testbed(const ArgList &args, Logfile &logfile)
         }
     }
 
-    // Attach each of the 768 servers to exactly one leaf with a 10 Gbps link.
-    for (uint32_t leaf = 0; leaf < N_LEAF; leaf++) {
-        for (uint32_t server = 0; server < N_SERVER; server++) {
+    // Attach each active server to exactly one leaf with a 10 Gbps link.
+    for (uint32_t leaf = 0; leaf < topology.leaves; leaf++) {
+        for (uint32_t server = 0; server < topology.serversPerLeaf; server++) {
             createQueue("fq", qServerLeaf[leaf][server], LEAF_SPEED, ENDH_BUFFER);
             nameObject(*qServerLeaf[leaf][server],
                        "q-server-leaf-" + to_string(leaf) + "-" + to_string(server),
@@ -147,34 +182,41 @@ conga_testbed(const ArgList &args, Logfile &logfile)
 
     // Offered load is relative to the aggregate 10 Gbps server-facing
     // capacity. The shared server-to-leaf queues enforce each host's link rate.
-    linkspeed_bps flowRate = llround(utilization * LEAF_SPEED * N_NODES);
+    linkspeed_bps flowRate = llround(utilization * LEAF_SPEED * topology.nodes());
+    // Capture ownership by value: the policy must survive this setup function.
+    route_gen_t fnGenerateRoute = [loadBalancer, topology](route_t *&fwd, route_t *&rev,
+                                               uint32_t &src, uint32_t &dst) {
+        conga::generateRandomRoute(*loadBalancer, topology, fwd, rev, src, dst);
+    };
     FlowGenerator *flowGenerator = new FlowGenerator(endpoint,
-                                                      generateRandomRoute,
+                                                      fnGenerateRoute,
                                                       flowRate,
                                                       avgFlowSize,
                                                       distribution);
     flowGenerator->setTimeLimits(timeFromUs(1), timeFromSec(duration) - 1);
     EventList::Get().setEndtime(timeFromSec(duration));
 
-    cerr << "CONGA topology: " << N_CORE << " cores, " << N_LEAF
-         << " leaves, " << N_NODES << " servers" << endl;
+    cerr << "CONGA topology: " << topology.cores << " cores, " << topology.leaves
+         << " leaves, " << topology.nodes() << " servers" << endl;
 }
 
 void
-conga::generateRandomRoute(route_t *&fwd,
+conga::generateRandomRoute(LoadBalancer &loadBalancer,
+                           const TopologyConfig &topology,
+                           route_t *&fwd,
                            route_t *&rev,
                            uint32_t &src,
                            uint32_t &dst)
 {
-    src = rand() % N_NODES;
+    src = rand() % topology.nodes();
     do {
-        dst = rand() % N_NODES;
+        dst = rand() % topology.nodes();
     } while (dst == src);
 
-    uint32_t srcLeaf = src / N_SERVER;
-    uint32_t dstLeaf = dst / N_SERVER;
-    uint32_t srcServer = src % N_SERVER;
-    uint32_t dstServer = dst % N_SERVER;
+    uint32_t srcLeaf = src / topology.serversPerLeaf;
+    uint32_t dstLeaf = dst / topology.serversPerLeaf;
+    uint32_t srcServer = src % topology.serversPerLeaf;
+    uint32_t dstServer = dst % topology.serversPerLeaf;
 
     fwd = new route_t();
     rev = new route_t();
@@ -184,11 +226,15 @@ conga::generateRandomRoute(route_t *&fwd,
     rev->push_back(qServerLeaf[dstLeaf][dstServer]);
     rev->push_back(pServerLeaf[dstLeaf][dstServer]);
 
-    // Until CONGA's table-driven choice is implemented, this is the ECMP
-    // baseline: one randomly selected equal-cost core is fixed for the flow.
+    // LOAD BALANCER: choose the source leaf's uplink (identified by core).
+    // Delegate policy to the selected implementation; routes stay shared.
+    // Same-leaf traffic needs no fabric uplink selection.
     if (srcLeaf != dstLeaf) {
-        uint32_t core = rand() % N_CORE;
+        uint32_t core = loadBalancer.chooseUplink(srcLeaf, dstLeaf);
+        assert(core < topology.cores);
 
+        // Install the selected path for all data packets and reverse ACKs
+        // in this flow (the lab treats a whole flow as one flowlet).
         fwd->push_back(qLeafCore[srcLeaf][core]);
         fwd->push_back(pLeafCore[srcLeaf][core]);
         fwd->push_back(qCoreLeaf[core][dstLeaf]);

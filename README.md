@@ -124,15 +124,31 @@ Experiment 2 now builds the complete leaf/core topology and uses a random
 equal-cost core as its initial ECMP baseline. CONGA table-driven selection is
 still tracked in `TODO.md`.
 
+The route callback captures a `shared_ptr<LoadBalancer>` by value. The
+`EcmpLoadBalancer` implementation in `htsim/load-balancers/ecmp.*` owns the
+current random uplink policy; `htsim/load-balancers/load-balancer.h` defines
+the abstract interface. Add future policies alongside ECMP in that directory.
+
 | Flag | Default | Description |
 |---|---:|---|
 | `--duration` | `5` | Simulation duration in seconds. |
+| `--lb` | `ecmp` | `ecmp` selects the ECMP baseline; `conga` exits with a not-implemented error. |
+| `--small` | `0` | `1` uses 2 cores, 2 leaves, and 2 servers per leaf for debugging; `0` uses the required full topology. |
 | `--utilization` | `0.1` | Offered load relative to aggregate server-facing capacity. |
 | `--flowsize` | `100000` | Average flow size in bytes. |
 | `--linkdelay` | `0.1` | Propagation delay per directional pipe in microseconds. |
 | `--flowdist` | `uniform` | `uniform`, `pareto`, `enterprise`, or `datamining`. |
 | `--queue` | `droptail` | Fabric/server-downlink queue: `droptail`, `fq`, `afq`, `pq`, or `sfq`. |
 | `--endhost` | `dctcp` | `tcp`, `dctcp`, `timely`, or `pp`. |
+
+For a quick topology smoke test, run from `htsim/`:
+
+```bash
+./htsim --expt=2 --small=1 --lb=ecmp --duration=1 --utilization=0.0001 \
+  --flowsize=10000 --logfile=/tmp/conga-small
+```
+
+Offered load scales with the number of active servers in either topology.
 
 #### Experiment 3: fat tree
 
@@ -191,8 +207,8 @@ Depending on the measurement design, also update `htsim/flow-generator.h/.cpp`
 to preserve demand information or write machine-readable flow records, and
 `htsim/tcp.h/.cpp` to emit final FCT data. `htsim/test.h` already registers
 experiment 2, so it only needs editing if the experiment interface changes.
-The Makefile uses `$(wildcard *.cpp)`, so new `.cpp` files in `htsim/` are
-compiled automatically without listing them manually.
+The Makefile discovers `.cpp` files in `htsim/` and `htsim/load-balancers/`,
+so new implementations in those directories compile automatically.
 
 ## Part 3: Performance Report
 
