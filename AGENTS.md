@@ -4,6 +4,8 @@
 
 This repository contains a C++11 discrete-event network simulator for the CS740 CONGA lab. All simulator code is under `htsim/`. Core primitives such as packets, queues, pipes, TCP, logging, and event scheduling are split into matching `.h`/`.cpp` pairs. Workload generation lives in `workloads.*` and `flow-generator.*`. Simulation scenarios are in `test_single_link.cpp`, `test_fat-tree_testbed.cpp`, and `test_conga_testbed.cpp`; register new scenarios in `test.h`. Runtime traces are written under `htsim/data/`. The top-level `README` defines the assignment and required experiments.
 
+Packet primitives are grouped in `htsim/packets/`, DRE measurement and queue wrappers in `htsim/congestion/`, aggregate counters in `htsim/stats/`, and routing policies in `htsim/load-balancers/`. The Makefile compiles sources in these directories automatically. See `README.md` for flags and `htsim/tests/` for regression checks.
+
 ## Build, Test, and Development Commands
 
 Run commands from the repository root:

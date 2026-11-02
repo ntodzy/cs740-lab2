@@ -47,19 +47,20 @@ Verified by `bash htsim/tests/test-routing-randomness.sh` and
 ## 4. Add CONGA packet metadata
 
 - [ ] Add source leaf, destination leaf, `LBTag`, `CE`, feedback tag, feedback metric, and validity fields to `Packet` (or a contained metadata struct).
-- [ ] Reset every field in `Packet::set()` because packets are pooled and reused.
+- [x] Add initial packet measurement metadata: validity, `LBTag`, and `CE` in `packets/`; leaf addressing and feedback fields remain above.
+- [x] Reset implemented metadata fields in `Packet::set()` because packets are pooled and reused; extend the reset when adding feedback.
 - [ ] Ensure `DataAck` receives feedback before the triggering `DataPacket` is freed.
-- [ ] Test data and ACK reuse for stale metadata leakage.
+- [x] Test data and ACK reuse for stale measurement metadata leakage; extend coverage when feedback is added.
 
 **Done when:** metadata survives each intended route hop and a newly allocated pooled packet starts clean.
 
 ## 5. Add congestion measurement
 
-- [ ] Implement a `CongaQueue`/DRE tracker using `EventList::Get().now()`.
-- [ ] Decay by elapsed simulation time, add arriving bytes, normalize by link rate and the chosen time constant, then quantize.
-- [ ] Expose the current metric to the owning leaf for local-uplink comparison.
-- [ ] Update packet `CE` with `max(old_ce, link_metric)` on monitored fabric links.
-- [ ] Add deterministic tests for no elapsed time, long idle decay, saturation, and quantization boundaries.
+- [x] Implement `congestion/DreTracker` and a queue-discipline-independent `DreQueueWrapper` using `EventList::Get().now()`.
+- [x] Decay by elapsed simulation time, add arriving bytes, normalize by link rate and the chosen time constant, then quantize.
+- [x] Expose `congestionMetric()` on each fabric wrapper for later local-uplink comparisons; reads account for idle time.
+- [x] Update packet `CE` with `max(old_ce, link_metric)` on monitored fabric links.
+- [x] Add deterministic tests for no elapsed time, long idle decay, saturation, quantization boundaries, queue behavior, drops, and packet reuse (`bash htsim/tests/test-dre.sh`).
 
 **Done when:** `CE` is monotonic along a path and the metric rises under load and decays while idle.
 

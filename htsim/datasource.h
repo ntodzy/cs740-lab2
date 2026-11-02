@@ -6,7 +6,7 @@
 
 #include "eventlist.h"
 #include "loggertypes.h"
-#include "datapacket.h"
+#include "packets/datapacket.h"
 #include "datasink.h"
 
 #include <list>

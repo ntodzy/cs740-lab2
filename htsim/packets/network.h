@@ -4,8 +4,9 @@
 #ifndef NETWORK_H
 #define NETWORK_H
 
-#include "htsim.h"
-#include "loggertypes.h"
+#include "../htsim.h"
+#include "../loggertypes.h"
+#include "conga-metadata.h"
 
 #include <vector>
 
@@ -50,6 +51,19 @@ class Packet
     inline void setPriority(uint32_t p) {_priority = p;}
     inline uint32_t getPriority() {return _priority;}
 
+    bool hasCongaMetadata() const { return _conga.valid; }
+    void initializeConga(uint32_t uplink) {
+        _conga = CongaMetadata();
+        _conga.valid = true;
+        _conga.lbTag = uplink;
+    }
+    const CongaMetadata &congaMetadata() const { return _conga; }
+    void accumulateCe(uint32_t metric) {
+        if (_conga.valid && metric > _conga.ce) {
+            _conga.ce = metric;
+        }
+    }
+
     protected:
     void set(PacketFlow &flow, route_t &route, mem_b pkt_size, packetid_t id);
 
@@ -62,6 +76,7 @@ class Packet
 
     uint32_t _flags;
     uint32_t _priority;
+    CongaMetadata _conga;
 };
 
 class PacketFlow : public Logged

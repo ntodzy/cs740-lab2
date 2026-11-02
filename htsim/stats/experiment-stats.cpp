@@ -13,12 +13,14 @@ ExperimentStats::ExperimentStats(const std::string &prefix)
     }
 }
 
-void ExperimentStats::registerLink(Queue &queue, linkspeed_bps speed, int core)
+void ExperimentStats::registerLink(Queue &queue, linkspeed_bps speed, int core,
+                                   DreQueueWrapper *dre)
 {
     Link link;
     link.name = queue.str();
     link.speed = speed;
     link.core = core;
+    link.dre = dre;
     _links.emplace(queue.id, link);
 }
 
@@ -57,7 +59,8 @@ void ExperimentStats::write(const FlowGenerator &generator, simtime_picosec endT
                    << ',' << route.core << '\n';
     }
     _linkFile << "link,bitrate_bps,enqueued_packets,enqueued_bytes,departed_packets,"
-                 "departed_bytes,dropped_packets,dropped_bytes,utilization\n";
+                 "departed_bytes,dropped_packets,dropped_bytes,utilization,"
+                 "dre_metric,dre_normalized_load,dre_offered_bytes\n";
     for (const auto &entry : _links) {
         const Link &link = entry.second;
         double utilization = endTime == 0 ? 0 :
@@ -65,7 +68,15 @@ void ExperimentStats::write(const FlowGenerator &generator, simtime_picosec endT
         _linkFile << link.name << ',' << link.speed << ',' << link.arrivals << ','
                   << link.arrivalBytes << ',' << link.departures << ','
                   << link.departureBytes << ',' << link.drops << ',' << link.dropBytes
-                  << ',' << std::setprecision(17) << utilization << '\n';
+                  << ',' << std::setprecision(17) << utilization;
+        if (link.dre != nullptr) {
+            _linkFile << ',' << link.dre->congestionMetric(endTime)
+                      << ',' << link.dre->normalizedLoad(endTime)
+                      << ',' << link.dre->offeredBytes();
+        } else {
+            _linkFile << ",,,"; // Host links are not DRE monitored.
+        }
+        _linkFile << '\n';
     }
     _summaryFile << "generated,completed,incomplete,route_violations\n"
                  << generator.generatedFlows() << ','

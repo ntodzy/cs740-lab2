@@ -5,7 +5,7 @@
 #define DATASINK_H
 
 #include "loggertypes.h"
-#include "datapacket.h"
+#include "packets/datapacket.h"
 
 #include <list>
 

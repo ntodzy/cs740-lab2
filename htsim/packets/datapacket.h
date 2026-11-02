@@ -1,5 +1,5 @@
 /*
- * Datapacket header
+ * Pooled data and acknowledgment packets
  */
 #ifndef DATAPACKET_H
 #define DATAPACKET_H

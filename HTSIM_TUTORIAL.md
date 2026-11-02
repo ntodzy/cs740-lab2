@@ -40,11 +40,13 @@ Time is stored as `simtime_picosec` (`uint64_t`). Always use helpers in `htsim.h
 | Area | Main files | Responsibility |
 |---|---|---|
 | Scheduling | `eventlist.*` | Singleton event queue and current simulation time |
-| Packets/routes | `network.*`, `datapacket.*` | Packet base class, data/ACK packets, ordered `route_t` hops |
+| Packets/routes | `packets/network.*`, `packets/datapacket.*` | Packet base class, data/ACK packets, ordered `route_t` hops |
+| Fabric measurement | `congestion/dre.*`, `congestion/dre-queue-wrapper.*` | Per-direction DRE and packet marking without changing the queue discipline |
 | Links | `queue.*`, `pipe.*` | Serialization/buffering and propagation delay |
 | Transport | `datasource.*`, `datasink.*`, `tcp.*` | Flow endpoints, TCP/DCTCP, ACKs, retransmission |
 | Traffic | `flow-generator.*`, `workloads.*` | Arrival process, endpoints, sizes, and flow creation |
 | Results | `logfile.*`, `loggers.*` | Binary event records, object IDs, queue/TCP sampling |
+| Aggregate results | `stats/experiment-stats.*` | Link counters, DRE snapshots, routes, and completion counts |
 | Scenarios | `test_*.cpp`, `test.h` | Topology construction and experiment registration |
 
 `PacketSink::receivePacket()` is the common interface for every hop. `Packet::sendOn()` advances `_nexthop` through a `route_t`, which is simply a `vector<PacketSink*>`.
@@ -102,7 +104,7 @@ The cleanest design is to keep policy at leaves and measurement at fabric queues
 | New concept | Suggested location |
 |---|---|
 | `LBTag`, `CE`, feedback tag/metric, validity | Base `Packet`, so data and ACK packets can carry it |
-| DRE-like link metric | A `CongaQueue` subclass or reusable tracker owned by each fabric queue |
+| DRE-like link metric | Implemented in `congestion/DreTracker`, owned by a `DreQueueWrapper` around each directional fabric queue |
 | To-/From-Leaf tables | A `LeafSwitch` implementing `PacketSink` |
 | Uplink choice | `LeafSwitch::chooseUplink()`, called by the route generator |
 | ECMP/CONGA selection | Experiment argument such as `--lb=ecmp` or `--lb=conga` |
@@ -115,6 +117,19 @@ source host -> source leaf -> selected leaf/core queue+pipe
 ```
 
 Static route entries still model the chosen core; leaf objects update metadata as packets pass. A monitored fabric queue updates its simulation-time DRE and applies `CE = max(CE, link_metric)`. The destination leaf records the observation in `FromLeaf[source][LBTag]`. A reverse packet carries a valid feedback entry; the original source leaf updates `ToLeaf[destination][FB_LBTag]`.
+
+Currently, only the measurement portion is implemented: source-leaf wrappers
+initialize `LBTag`/`CE`, and downstream wrappers accumulate CE. A wrapper
+replaces its queue in the route, then calls the wrapped queue's `receivePacket()`
+directly. The queue still schedules service and forwards to the next pipe.
+Leaf tables and reverse feedback remain future work. Both data and ACK packets
+reset metadata when allocated from their pools.
+
+The DRE counts offered bytes before admission, including dropped arrivals.
+It uses continuous exponential decay with configurable `--dre-tau` (160 us)
+and `--dre-levels` (8). Normalization uses bytes per second × tau in seconds;
+metric reads decay idle state. Defaults are an approximation chosen for this
+simulator, not a claim of bit-exact reproduction of hardware DRE.
 
 For candidate uplink `u`, choose the smallest:
 

@@ -1,5 +1,5 @@
 /*
- * Data packet 
+ * Data and acknowledgment packet pools
  */
 #include "datapacket.h"
 

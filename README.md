@@ -138,6 +138,8 @@ the abstract interface. Add future policies alongside ECMP in that directory.
 | `--utilization` | `0.1` | Offered load relative to aggregate server-facing capacity. |
 | `--flowsize` | `100000` | Average flow size in bytes. |
 | `--linkdelay` | `0.1` | Propagation delay per directional pipe in microseconds. |
+| `--dre-tau` | `160` | DRE exponential decay time constant in microseconds; positive, at most 1,000,000. |
+| `--dre-levels` | `8` | Number of congestion metric levels; at least 2. Metrics range from 0 to levels − 1. |
 | `--flowdist` | `uniform` | `uniform`, `pareto`, `enterprise`, or `datamining`. |
 | `--queue` | `droptail` | Fabric/server-downlink queue: `droptail`, `fq`, `afq`, `pq`, or `sfq`. |
 | `--endhost` | `dctcp` | `tcp`, `dctcp`, `timely`, or `pp`. |
@@ -178,6 +180,34 @@ Statistics are flushed after the simulation event loop. Utilization is
 departed bytes × 8 divided by link rate × elapsed simulation time; generated
 flows include those scheduled to start after the cutoff due to start jitter.
 CSV output adds aggregate counters without periodic queue sampling.
+
+Every directional fabric link also has a `DreQueueWrapper` around its existing
+queue. This preserves FIFO/FQ/AFQ/PQ/SFQ behavior. Its independent DRE measures
+offered traffic, including packets dropped on arrival. The source-leaf wrapper
+sets `LBTag` and clears `CE`; each fabric wrapper accumulates the maximum link
+metric. Data and ACK traversals are measured independently. This provides
+measurement metadata only; leaf tables, reverse feedback, and CONGA routing
+are not implemented yet.
+
+The tracker uses `X = X * exp(-elapsed / tau) + arriving_bytes`, with normalized
+load `X / ((link_bps / 8) * tau_seconds)`. The metric is
+`min(levels - 1, floor(normalized_load * levels))`. Reading a metric also
+decays it to the current simulation time. `.links.csv` includes final
+`dre_metric`, `dre_normalized_load`, and cumulative `dre_offered_bytes`;
+these columns are blank for unmonitored server links.
+
+Related components are grouped under `htsim/`:
+
+```text
+congestion/       # DRE tracker and queue wrapper
+packets/          # Packet, PacketFlow, data/ACK pools, and CONGA metadata
+stats/            # Experiment statistics (AI-generated notices retained)
+load-balancers/   # Load-balancer interface and ECMP policy
+```
+
+Run `bash htsim/tests/test-dre.sh` to check decay, quantization, saturation,
+idle reads, packet reuse, dropped arrivals, CE propagation, and equivalent
+wrapped/unwrapped queue scheduling for all five queue disciplines.
 
 After building, run `node htsim/tests/test-ecmp.mjs` from the repository root
 to verify the full topology, all 12 cores carrying traffic, fixed-core packet
@@ -226,8 +256,8 @@ CONGA paths in the same experiment so they share topology and workload code.
 | File | Required changes |
 |---|---|
 | `htsim/test_conga_testbed.cpp` | Extend the implemented 12-core/24-leaf/768-server topology and route generator with selectable ECMP and CONGA policies. |
-| `htsim/network.h` | Add packet-carried CONGA metadata such as source/destination leaf, `LBTag`, `CE`, feedback tag/metric, and validity flags. |
-| `htsim/network.cpp` | Reset every CONGA metadata field in `Packet::set()` because packet objects are pooled and reused. |
+| `htsim/packets/network.h` | Contains validity, `LBTag`, and `CE`; extend with source/destination leaf and feedback fields when implementing leaf tables. |
+| `htsim/packets/network.cpp` | Resets CONGA metadata in `Packet::set()` because packet objects are pooled and reused. |
 | `htsim/tcp.cpp` | Preserve or attach the feedback information required on reverse ACKs before the received data packet is freed. |
 
 The following new files are recommended to keep CONGA logic out of generic
@@ -236,14 +266,15 @@ simulator components:
 | New file | Responsibility |
 |---|---|
 | `htsim/leafswitch.h`, `htsim/leafswitch.cpp` | Store Congestion-To-Leaf and Congestion-From-Leaf tables, process forward/feedback metadata, and choose the minimum-congestion uplink. |
-| `htsim/congaqueue.h`, `htsim/congaqueue.cpp` | Maintain a simulation-time DRE-like link metric and update packet `CE` with the maximum congestion seen. |
+| `htsim/congestion/dre.*`, `htsim/congestion/dre-queue-wrapper.*` (implemented) | Maintain simulation-time congestion estimates independently of queue discipline and update packet `CE` on fabric links. |
 
 Depending on the measurement design, also update `htsim/flow-generator.h/.cpp`
 to preserve demand information or write machine-readable flow records, and
 `htsim/tcp.h/.cpp` to emit final FCT data. `htsim/test.h` already registers
 experiment 2, so it only needs editing if the experiment interface changes.
-The Makefile discovers `.cpp` files in `htsim/` and `htsim/load-balancers/`,
-so new implementations in those directories compile automatically.
+The Makefile discovers `.cpp` files in `htsim/`, `htsim/load-balancers/`,
+`htsim/congestion/`, `htsim/packets/`, and `htsim/stats/`, so implementations
+in those directories compile automatically.
 
 ## Part 3: Performance Report
 

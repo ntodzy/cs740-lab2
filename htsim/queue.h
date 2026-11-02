@@ -5,7 +5,7 @@
 #define QUEUE_H
 
 #include "eventlist.h"
-#include "network.h"
+#include "packets/network.h"
 #include "loggertypes.h"
 
 #include <list>

@@ -5,7 +5,7 @@
  * A simple exogenous queue
  */
 
-#include "network.h"
+#include "packets/network.h"
 
 class ExoQueue : public PacketSink
 {

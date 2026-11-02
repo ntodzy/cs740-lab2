@@ -8,7 +8,8 @@
 #include "pipe.h"
 #include "test.h"
 #include "load-balancers/ecmp.h"
-#include "experiment-stats.h"
+#include "stats/experiment-stats.h"
+#include "congestion/dre-queue-wrapper.h"
 
 #include <memory>
 
@@ -46,6 +47,8 @@ Queue *qLeafCore[N_LEAF][N_CORE] = {};
 Pipe  *pLeafCore[N_LEAF][N_CORE] = {};
 Queue *qCoreLeaf[N_CORE][N_LEAF] = {};
 Pipe  *pCoreLeaf[N_CORE][N_LEAF] = {};
+DreQueueWrapper *wLeafCore[N_LEAF][N_CORE] = {};
+DreQueueWrapper *wCoreLeaf[N_CORE][N_LEAF] = {};
 
 std::shared_ptr<ExperimentStats> runStats;
 FlowGenerator *runGenerator = NULL;
@@ -55,7 +58,8 @@ void createQueue(const std::string &queueType,
                  linkspeed_bps speed,
                  mem_b buffer);
 void nameObject(Logged &object, const std::string &name, Logfile &logfile,
-                linkspeed_bps speed = LEAF_SPEED, int core = -1);
+                linkspeed_bps speed = LEAF_SPEED, int core = -1,
+                DreQueueWrapper *dre = nullptr);
 void generateRandomRoute(LoadBalancer &loadBalancer,
                          const TopologyConfig &topology,
                          ExperimentStats &stats,
@@ -82,6 +86,8 @@ conga_testbed(const ArgList &args, Logfile &logfile)
     string lb = "ecmp";
     uint32_t small = 0;
     uint32_t trafficSeed = 1729;
+    double dreTauUs = 160;
+    uint32_t dreLevels = 8;
 
     parseInt(args, "duration", duration);
     parseInt(args, "flowsize", avgFlowSize);
@@ -96,6 +102,17 @@ conga_testbed(const ArgList &args, Logfile &logfile)
     // Independent engine even when the two seeds have the same numeric value.
     uint32_t routingSeed = trafficSeed;
     parseInt(args, "routingseed", routingSeed);
+    parseDouble(args, "dre-tau", dreTauUs);
+    parseInt(args, "dre-levels", dreLevels);
+
+    string dreTauText = "160";
+    parseString(args, "dre-tau", dreTauText);
+    if (dreTauText.find_first_not_of("0123456789.eE+-") != string::npos ||
+        dreTauUs <= 0 || dreTauUs > 1000000 ||
+        timeFromUs(dreTauUs) == 0 || dreLevels < 2) {
+        cerr << "dre-tau must be representable in (0, 1000000] us; dre-levels must be >= 2\n";
+        exit(1);
+    }
 
     if (small > 1) {
         cerr << "small must be 0 or 1\n";
@@ -129,18 +146,22 @@ conga_testbed(const ArgList &args, Logfile &logfile)
     for (uint32_t leaf = 0; leaf < topology.leaves; leaf++) {
         for (uint32_t core = 0; core < topology.cores; core++) {
             createQueue(queueType, qLeafCore[leaf][core], CORE_SPEED, LEAF_BUFFER);
+            wLeafCore[leaf][core] = new DreQueueWrapper(*qLeafCore[leaf][core],
+                CORE_SPEED, timeFromUs(dreTauUs), dreLevels, core);
             nameObject(*qLeafCore[leaf][core],
                        "q-leaf-core-" + to_string(leaf) + "-" + to_string(core),
-                       logfile, CORE_SPEED, core);
+                       logfile, CORE_SPEED, core, wLeafCore[leaf][core]);
             pLeafCore[leaf][core] = new Pipe(timeFromUs(linkDelay));
             nameObject(*pLeafCore[leaf][core],
                        "p-leaf-core-" + to_string(leaf) + "-" + to_string(core),
                        logfile);
 
             createQueue(queueType, qCoreLeaf[core][leaf], CORE_SPEED, CORE_BUFFER);
+            wCoreLeaf[core][leaf] = new DreQueueWrapper(*qCoreLeaf[core][leaf],
+                CORE_SPEED, timeFromUs(dreTauUs), dreLevels);
             nameObject(*qCoreLeaf[core][leaf],
                        "q-core-leaf-" + to_string(core) + "-" + to_string(leaf),
-                       logfile, CORE_SPEED, core);
+                       logfile, CORE_SPEED, core, wCoreLeaf[core][leaf]);
             pCoreLeaf[core][leaf] = new Pipe(timeFromUs(linkDelay));
             nameObject(*pCoreLeaf[core][leaf],
                        "p-core-leaf-" + to_string(core) + "-" + to_string(leaf),
@@ -256,14 +277,14 @@ conga::generateRandomRoute(LoadBalancer &loadBalancer,
 
         // Install the selected path for all data packets and reverse ACKs
         // in this flow (the lab treats a whole flow as one flowlet).
-        fwd->push_back(qLeafCore[srcLeaf][core]);
+        fwd->push_back(wLeafCore[srcLeaf][core]);
         fwd->push_back(pLeafCore[srcLeaf][core]);
-        fwd->push_back(qCoreLeaf[core][dstLeaf]);
+        fwd->push_back(wCoreLeaf[core][dstLeaf]);
         fwd->push_back(pCoreLeaf[core][dstLeaf]);
 
-        rev->push_back(qLeafCore[dstLeaf][core]);
+        rev->push_back(wLeafCore[dstLeaf][core]);
         rev->push_back(pLeafCore[dstLeaf][core]);
-        rev->push_back(qCoreLeaf[core][srcLeaf]);
+        rev->push_back(wCoreLeaf[core][srcLeaf]);
         rev->push_back(pCoreLeaf[core][srcLeaf]);
     }
 
@@ -299,13 +320,13 @@ conga::createQueue(const string &queueType,
 
 void
 conga::nameObject(Logged &object, const string &name, Logfile &logfile,
-                   linkspeed_bps speed, int core)
+                   linkspeed_bps speed, int core, DreQueueWrapper *dre)
 {
     object.setName(name);
     logfile.writeName(object);
     Queue *queue = dynamic_cast<Queue*>(&object);
     if (queue != NULL) {
-        runStats->registerLink(*queue, speed, core);
+        runStats->registerLink(*queue, speed, core, dre);
     }
 }
 

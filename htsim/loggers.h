@@ -7,7 +7,7 @@
 #include "eventlist.h"
 #include "logfile.h"
 #include "loggertypes.h"
-#include "network.h"
+#include "packets/network.h"
 #include "queue.h"
 #include "tcp.h"
 #include "prof.h"

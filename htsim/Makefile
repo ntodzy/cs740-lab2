@@ -15,7 +15,7 @@ DEPFLAGS = -MT $@ -MMD -MP -MF $(DEPDIR)/$*.Td
 POSTCOMPILE = @mv -f $(DEPDIR)/$*.Td $(DEPDIR)/$*.d && touch $@
 
 EXEC = htsim
-SRCS = $(wildcard *.cpp load-balancers/*.cpp)
+SRCS = $(wildcard *.cpp load-balancers/*.cpp congestion/*.cpp packets/*.cpp stats/*.cpp)
 OBJS = $(SRCS:%.cpp=$(OBJDIR)/%.o)
 
 $(EXEC): $(OBJS)

@@ -49,6 +49,19 @@ function check({records, output}, cores, leaves, servers) {
     for (const link of records.links) {
         assert.ok(+link.departed_bytes <= +link.enqueued_bytes, link.link);
         assert.ok(+link.utilization >= 0 && +link.utilization <= 1.001, link.link);
+        const fabric = link.link.startsWith('q-leaf-core-') || link.link.startsWith('q-core-leaf-');
+        if (fabric) {
+            assert.notEqual(link.dre_metric, '', link.link);
+            assert.ok(+link.dre_metric >= 0 && +link.dre_metric < 8, link.link);
+            assert.ok(+link.dre_normalized_load >= 0, link.link);
+            assert.ok(+link.dre_offered_bytes >= +link.enqueued_bytes, link.link);
+            if (+link.dropped_bytes === 0) {
+                assert.equal(+link.dre_offered_bytes, +link.enqueued_bytes, link.link);
+            }
+        } else {
+            assert.equal(link.dre_metric, '', link.link);
+            assert.equal(link.dre_offered_bytes, '', link.link);
+        }
     }
 }
 

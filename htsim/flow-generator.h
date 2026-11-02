@@ -6,7 +6,7 @@
 
 #include "eventlist.h"
 #include "loggers.h"
-#include "network.h"
+#include "packets/network.h"
 #include "datasource.h"
 #include "tcp.h"
 #include "packetpair.h"

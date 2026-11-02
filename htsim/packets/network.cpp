@@ -18,6 +18,7 @@ Packet::set(PacketFlow &flow,
     _nexthop = 0;
     _flags = 0;
     _priority = 0;
+    _conga = CongaMetadata(); // Reset metadata when a pooled packet is reused.
 }
 
 void
