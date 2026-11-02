@@ -52,10 +52,20 @@ class DataAck : public Packet
 
         virtual ~DataAck(){}
 
-        inline static DataAck* newpkt(PacketFlow &flow, route_t &route, seq_t seqno, seq_t ackno)
+        inline static DataAck* newpkt(PacketFlow &flow, route_t &route, seq_t seqno, seq_t ackno,
+                                      const CongaMetadata *observation = nullptr)
         {
             DataAck *p = _packetdb.allocPacket();
             p->set(flow, route, ACK_SIZE, ackno);
+            // ACKs share PacketFlow with the data but travel in reverse.
+            p->setCongaLeafIds(flow.destinationLeaf(), flow.sourceLeaf());
+            // Copy the arriving path observation while the data packet is alive.
+            // Never echo its carried feedback: that describes the other direction.
+            if (observation != nullptr && observation->valid && observation->hasLeafIds() &&
+                observation->sourceLeaf == flow.sourceLeaf() &&
+                observation->destinationLeaf == flow.destinationLeaf()) {
+                p->setCongaFeedback(observation->lbTag, observation->ce);
+            }
             p->_seqno = seqno;
             p->_ackno = ackno;
             flow._nPackets++;

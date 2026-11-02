@@ -1,3 +1,5 @@
 *.o
 *.d
 /htsim/data/htsim-log.trace
+htsim/htsim
+logs/

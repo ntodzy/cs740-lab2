@@ -86,7 +86,8 @@ conga_testbed(const ArgList &args, Logfile &logfile)
     string lb = "ecmp";
     uint32_t small = 0;
     uint32_t trafficSeed = 1729;
-    double dreTauUs = 160;
+    double dreIntervalUs = 20;
+    double dreAlpha = 0.125;
     uint32_t dreLevels = 8;
 
     parseInt(args, "duration", duration);
@@ -102,15 +103,22 @@ conga_testbed(const ArgList &args, Logfile &logfile)
     // Independent engine even when the two seeds have the same numeric value.
     uint32_t routingSeed = trafficSeed;
     parseInt(args, "routingseed", routingSeed);
-    parseDouble(args, "dre-tau", dreTauUs);
+    parseDouble(args, "dre-interval", dreIntervalUs);
+    parseDouble(args, "dre-alpha", dreAlpha);
     parseInt(args, "dre-levels", dreLevels);
 
-    string dreTauText = "160";
-    parseString(args, "dre-tau", dreTauText);
-    if (dreTauText.find_first_not_of("0123456789.eE+-") != string::npos ||
-        dreTauUs <= 0 || dreTauUs > 1000000 ||
-        timeFromUs(dreTauUs) == 0 || dreLevels < 2) {
-        cerr << "dre-tau must be representable in (0, 1000000] us; dre-levels must be >= 2\n";
+    if (args.find("dre-tau") != args.end()) {
+        cerr << "dre-tau has been replaced by dre-interval and dre-alpha (tau = Tdre / alpha)\n";
+        exit(1);
+    }
+    string dreIntervalText = "20", dreAlphaText = "0.125";
+    parseString(args, "dre-interval", dreIntervalText);
+    parseString(args, "dre-alpha", dreAlphaText);
+    if (dreIntervalText.find_first_not_of("0123456789.eE+-") != string::npos ||
+        dreAlphaText.find_first_not_of("0123456789.eE+-") != string::npos ||
+        dreIntervalUs <= 0 || dreIntervalUs > 1000000 || timeFromUs(dreIntervalUs) == 0 ||
+        !(dreAlpha > 0 && dreAlpha < 1) || dreLevels != 8) {
+        cerr << "dre-interval must be in (0, 1000000] us; 0 < dre-alpha < 1; dre-levels must be 8\n";
         exit(1);
     }
 
@@ -147,7 +155,7 @@ conga_testbed(const ArgList &args, Logfile &logfile)
         for (uint32_t core = 0; core < topology.cores; core++) {
             createQueue(queueType, qLeafCore[leaf][core], CORE_SPEED, LEAF_BUFFER);
             wLeafCore[leaf][core] = new DreQueueWrapper(*qLeafCore[leaf][core],
-                CORE_SPEED, timeFromUs(dreTauUs), dreLevels, core);
+                CORE_SPEED, timeFromUs(dreIntervalUs), dreAlpha, core);
             nameObject(*qLeafCore[leaf][core],
                        "q-leaf-core-" + to_string(leaf) + "-" + to_string(core),
                        logfile, CORE_SPEED, core, wLeafCore[leaf][core]);
@@ -158,7 +166,7 @@ conga_testbed(const ArgList &args, Logfile &logfile)
 
             createQueue(queueType, qCoreLeaf[core][leaf], CORE_SPEED, CORE_BUFFER);
             wCoreLeaf[core][leaf] = new DreQueueWrapper(*qCoreLeaf[core][leaf],
-                CORE_SPEED, timeFromUs(dreTauUs), dreLevels);
+                CORE_SPEED, timeFromUs(dreIntervalUs), dreAlpha);
             nameObject(*qCoreLeaf[core][leaf],
                        "q-core-leaf-" + to_string(core) + "-" + to_string(leaf),
                        logfile, CORE_SPEED, core, wCoreLeaf[core][leaf]);
@@ -231,6 +239,7 @@ conga_testbed(const ArgList &args, Logfile &logfile)
                                                       avgFlowSize,
                                                       distribution);
     runGenerator = flowGenerator;
+    flowGenerator->setServersPerLeaf(topology.serversPerLeaf);
     flowGenerator->setTimeLimits(timeFromUs(1), timeFromSec(duration) - 1);
     EventList::Get().setEndtime(timeFromSec(duration));
 

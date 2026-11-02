@@ -366,13 +366,14 @@ TimelySink::receivePacket(Packet& pkt)
     processDataPacket(*p);
 
     pkt.flow().logTraffic(pkt, *this, TrafficLogger::PKT_RCVDESTROY);
+    DataAck *ack = DataAck::newpkt(_src->_flow, *_route, 1, _cumulative_ack,
+                                  &p->congaMetadata());
     p->free();
 
     if (TRACE_FLOW == _src->str()) {
         cout << str() << " SINK-TS: " << timeAsMs(EventList::Get().now()) << " at " << seqno << endl;
     }
 
-    DataAck *ack = DataAck::newpkt(_src->_flow, *_route, 1, _cumulative_ack);
     ack->flow().logTraffic(*ack, *this, TrafficLogger::PKT_CREATESEND);
     ack->set_ts(ts);
     ack->sendOn();

@@ -54,13 +54,10 @@ function check({records, output}, cores, leaves, servers) {
             assert.notEqual(link.dre_metric, '', link.link);
             assert.ok(+link.dre_metric >= 0 && +link.dre_metric < 8, link.link);
             assert.ok(+link.dre_normalized_load >= 0, link.link);
-            assert.ok(+link.dre_offered_bytes >= +link.enqueued_bytes, link.link);
-            if (+link.dropped_bytes === 0) {
-                assert.equal(+link.dre_offered_bytes, +link.enqueued_bytes, link.link);
-            }
+            assert.equal(+link.dre_sent_bytes, +link.departed_bytes, link.link);
         } else {
             assert.equal(link.dre_metric, '', link.link);
-            assert.equal(link.dre_offered_bytes, '', link.link);
+            assert.equal(link.dre_sent_bytes, '', link.link);
         }
     }
 }
@@ -91,3 +88,12 @@ for (const queue of ['droptail', 'fq', 'afq', 'pq', 'sfq']) {
     check(run('small-' + queue, {small: 1, queue}), 2, 2, 4);
     console.log(`${queue}: link/completion counters and packet route stability passed`);
 }
+
+check(run('periodic-options', {small: 1, 'dre-interval': 10, 'dre-alpha': 0.25}), 2, 2, 4);
+for (const option of ['--dre-alpha=0', '--dre-alpha=1', '--dre-alpha=nan',
+    '--dre-interval=0', '--dre-levels=16', '--dre-tau=160']) {
+    const result = spawnSync(join(htsim, 'htsim'), ['--expt=2', '--small=1',
+        `--logfile=${join(artifacts, 'invalid-dre')}`, option], {encoding: 'utf8'});
+    assert.equal(result.status, 1, `${option} must be rejected: ${result.stderr}`);
+}
+console.log('Periodic DRE options and invalid-configuration checks passed');

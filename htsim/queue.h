@@ -17,6 +17,8 @@ class Queue : public EventSource, public PacketSink
         void doNextEvent();
         virtual void receivePacket(Packet &pkt);
         virtual void printStats();
+        QueueLogger *logger() const { return _logger; }
+        void setLogger(QueueLogger *logger) { _logger = logger; }
 
         inline simtime_picosec drainTime(Packet *pkt) {
             return (simtime_picosec)(pkt->size()) * _ps_per_byte;

@@ -60,7 +60,7 @@ void ExperimentStats::write(const FlowGenerator &generator, simtime_picosec endT
     }
     _linkFile << "link,bitrate_bps,enqueued_packets,enqueued_bytes,departed_packets,"
                  "departed_bytes,dropped_packets,dropped_bytes,utilization,"
-                 "dre_metric,dre_normalized_load,dre_offered_bytes\n";
+                 "dre_metric,dre_normalized_load,dre_sent_bytes\n";
     for (const auto &entry : _links) {
         const Link &link = entry.second;
         double utilization = endTime == 0 ? 0 :
@@ -72,7 +72,7 @@ void ExperimentStats::write(const FlowGenerator &generator, simtime_picosec endT
         if (link.dre != nullptr) {
             _linkFile << ',' << link.dre->congestionMetric(endTime)
                       << ',' << link.dre->normalizedLoad(endTime)
-                      << ',' << link.dre->offeredBytes();
+                      << ',' << link.dre->sentBytes();
         } else {
             _linkFile << ",,,"; // Host links are not DRE monitored.
         }

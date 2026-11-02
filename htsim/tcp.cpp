@@ -475,14 +475,14 @@ TcpSink::receivePacket(Packet &pkt)
     }
 
     pkt.flow().logTraffic(pkt, *this, TrafficLogger::PKT_RCVDESTROY);
-    p->free();
-
-    DataAck *ack = DataAck::newpkt(_src->_flow, *_route, 1, _cumulative_ack);
+    DataAck *ack = DataAck::newpkt(_src->_flow, *_route, 1, _cumulative_ack,
+                                  &p->congaMetadata());
     ack->flow().logTraffic(*ack, *this, TrafficLogger::PKT_CREATESEND);
     ack->set_ts(ts);
     if (p->getFlag(Packet::ECN_FWD)) {
         ack->setFlag(Packet::ECN_REV);
     }
+    p->free();
     ack->sendOn();
 }
 

@@ -42,6 +42,9 @@ class FlowGenerator : public EventSource
         /* Flow arrival using a trace instead of dynamic generation during simulation. */
         void setTrace(std::string filename);
 
+        // Opt-in leaf addressing for experiment 2's contiguous host numbering.
+        void setServersPerLeaf(uint32_t count) { _serversPerLeaf = count; }
+
         /* Used by Source to notify the Generator of flow finishing, which can then
          * (optionally) generate a new flow. */
         void finishFlow(uint32_t flow_id);
@@ -88,6 +91,7 @@ class FlowGenerator : public EventSource
 
         // Custom flow size distribution.
         std::map<double,uint64_t> _flowSizeCDF;
+        uint32_t _serversPerLeaf = 0; // Zero leaves metadata disabled in other experiments.
 };
 
 #endif /* FLOW_GENERATOR_H */

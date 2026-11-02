@@ -452,7 +452,6 @@ PacketPairSink::receivePacket(Packet& pkt)
     processDataPacket(*p);
 
     pkt.flow().logTraffic(pkt, *this, TrafficLogger::PKT_RCVDESTROY);
-    p->free();
 
     // If this is the first pair, record timestamp for pkt-pair calculation.
     if (p->getFlag(Packet::PP_FIRST)) {
@@ -482,12 +481,14 @@ PacketPairSink::receivePacket(Packet& pkt)
              << " PPD " << timeAsUs(_pktpairdiff) << " ECN " << (int)p->getFlag(Packet::ECN_FWD) << endl;
     }
 
-    DataAck *ack = DataAck::newpkt(_src->_flow, *_route, _pktpairdiff, _cumulative_ack);
+    DataAck *ack = DataAck::newpkt(_src->_flow, *_route, _pktpairdiff, _cumulative_ack,
+                                  &p->congaMetadata());
     ack->flow().logTraffic(*ack, *this, TrafficLogger::PKT_CREATESEND);
     ack->set_ts(ts);
     if (p->getFlag(Packet::ECN_FWD)) {
         ack->setFlag(Packet::ECN_REV);
     }
+    p->free();
     ack->sendOn();
 }
 

@@ -118,18 +118,35 @@ source host -> source leaf -> selected leaf/core queue+pipe
 
 Static route entries still model the chosen core; leaf objects update metadata as packets pass. A monitored fabric queue updates its simulation-time DRE and applies `CE = max(CE, link_metric)`. The destination leaf records the observation in `FromLeaf[source][LBTag]`. A reverse packet carries a valid feedback entry; the original source leaf updates `ToLeaf[destination][FB_LBTag]`.
 
-Currently, only the measurement portion is implemented: source-leaf wrappers
+Currently, measurement and packet feedback transport are implemented: source-leaf wrappers
 initialize `LBTag`/`CE`, and downstream wrappers accumulate CE. A wrapper
 replaces its queue in the route, then calls the wrapped queue's `receivePacket()`
 directly. The queue still schedules service and forwards to the next pipe.
-Leaf tables and reverse feedback remain future work. Both data and ACK packets
-reset metadata when allocated from their pools.
+Experiment 2 supplies leaf IDs through `PacketFlow`; ACK IDs are reversed.
+Transport sinks copy the arriving `LBTag`/`CE` observation into the ACK's
+feedback fields before releasing the data packet. Reverse source-uplink
+initialization starts the ACK's own measurement while preserving that feedback.
+This immediate echo is preparatory transport plumbing; leaf tables, feedback
+scheduling, aging, and CONGA decisions remain future work. Both data and ACK
+packets reset every metadata field when allocated from their pools, then inherit
+the current flow's leaf IDs. `valid` and `feedbackValid` independently indicate
+which parts of the header are meaningful.
 
-The DRE counts offered bytes before admission, including dropped arrivals.
-It uses continuous exponential decay with configurable `--dre-tau` (160 us)
-and `--dre-levels` (8). Normalization uses bytes per second × tau in seconds;
-metric reads decay idle state. Defaults are an approximation chosen for this
-simulator, not a claim of bit-exact reproduction of hardware DRE.
+The DRE now follows the paper's periodic rule: each transmitted packet adds
+its size to X, and each Tdre tick multiplies X by `(1-alpha)`. It uses the
+existing queue-service notification, so dropped and still-queued packets do
+not contribute. CE is accumulated at departure, before forwarding, while
+source metadata initialization remains at ingress.
+
+`--dre-interval` defaults to 20 us and `--dre-alpha` to 0.125; the derived
+time constant is `tau = Tdre/alpha = 160 us`. Normalization uses link bytes
+per second × tau in seconds; quantization is `min(7, floor(8*normalized_load))`.
+Lazy evaluation applies every whole tick since the previous decay boundary,
+anchored at simulation time zero. Reads between ticks do not change X, and
+decay precedes transmission increments at exact tick boundaries. The previous
+exponential approximation remains commented out in `congestion/dre.cpp`.
+`--dre-tau` is no longer accepted and `--dre-levels` must be 8.
+The CSV's `dre_sent_bytes` counter replaces `dre_offered_bytes`.
 
 For candidate uplink `u`, choose the smallest:
 

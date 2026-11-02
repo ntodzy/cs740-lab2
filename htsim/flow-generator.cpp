@@ -188,6 +188,9 @@ FlowGenerator::createFlow(uint64_t flowSize,
     snk->setName(_prefix + "snk" + to_string(_flowsGenerated));
     src->_node_id = src_node;
     snk->_node_id = dst_node;
+    if (_serversPerLeaf != 0) {
+        src->_flow.setCongaLeafIds(src_node / _serversPerLeaf, dst_node / _serversPerLeaf);
+    }
 
     src->setDeadline(start_time + deadline);
 

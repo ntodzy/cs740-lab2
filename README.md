@@ -138,8 +138,9 @@ the abstract interface. Add future policies alongside ECMP in that directory.
 | `--utilization` | `0.1` | Offered load relative to aggregate server-facing capacity. |
 | `--flowsize` | `100000` | Average flow size in bytes. |
 | `--linkdelay` | `0.1` | Propagation delay per directional pipe in microseconds. |
-| `--dre-tau` | `160` | DRE exponential decay time constant in microseconds; positive, at most 1,000,000. |
-| `--dre-levels` | `8` | Number of congestion metric levels; at least 2. Metrics range from 0 to levels − 1. |
+| `--dre-interval` | `20` | Periodic decay interval Tdre in microseconds; positive, at most 1,000,000. |
+| `--dre-alpha` | `0.125` | Discount factor α, strictly between 0 and 1; each tick multiplies X by 1 − α. |
+| `--dre-levels` | `8` | Compatibility option; must be 8 because the metric is fixed to 3 bits (0–7). |
 | `--flowdist` | `uniform` | `uniform`, `pareto`, `enterprise`, or `datamining`. |
 | `--queue` | `droptail` | Fabric/server-downlink queue: `droptail`, `fq`, `afq`, `pq`, or `sfq`. |
 | `--endhost` | `dctcp` | `tcp`, `dctcp`, `timely`, or `pp`. |
@@ -183,18 +184,55 @@ CSV output adds aggregate counters without periodic queue sampling.
 
 Every directional fabric link also has a `DreQueueWrapper` around its existing
 queue. This preserves FIFO/FQ/AFQ/PQ/SFQ behavior. Its independent DRE measures
-offered traffic, including packets dropped on arrival. The source-leaf wrapper
-sets `LBTag` and clears `CE`; each fabric wrapper accumulates the maximum link
-metric. Data and ACK traversals are measured independently. This provides
-measurement metadata only; leaf tables, reverse feedback, and CONGA routing
-are not implemented yet.
+transmitted bytes at queue service completion; packets dropped or still queued
+do not increment X. The source-leaf wrapper sets `LBTag` and clears `CE` on
+ingress. Each wrapper intercepts the existing queue-service notification to
+increment X and accumulate the maximum metric in CE before forwarding; it
+also delegates logging to the original statistics logger. Data and ACK
+traversals are measured independently. ACKs now carry
+the triggering data packet's observed `LBTag`/`CE` back as feedback. This is
+an immediate observation echo; distributed leaf tables, feedback scheduling,
+aging, and congestion-aware CONGA routing are not implemented yet.
 
-The tracker uses `X = X * exp(-elapsed / tau) + arriving_bytes`, with normalized
-load `X / ((link_bps / 8) * tau_seconds)`. The metric is
-`min(levels - 1, floor(normalized_load * levels))`. Reading a metric also
-decays it to the current simulation time. `.links.csv` includes final
-`dre_metric`, `dre_normalized_load`, and cumulative `dre_offered_bytes`;
-these columns are blank for unmonitored server links.
+The packet metadata in `packets/conga-metadata.h` contains:
+
+| Field | Meaning |
+|---|---|
+| `sourceLeaf`, `destinationLeaf` | Leaf IDs for this packet's direction; reversed on ACKs. `UNKNOWN_LEAF` represents missing context, so leaf 0 is valid. |
+| `valid`, `lbTag`, `ce` | Whether a fabric path measurement has started, its chosen source uplink, and its accumulated congestion metric. |
+| `feedbackValid`, `feedbackLbTag`, `feedbackMetric` | Whether reverse-path feedback is present and which original uplink/metric it describes. |
+
+Experiment 2 supplies each flow's leaf IDs from its host endpoints. Data
+and retransmissions inherit forward IDs; ACKs inherit reversed IDs. The ACK
+factory copies the forward observation before the data packet is freed,
+while source-uplink initialization preserves feedback and starts a fresh CE.
+TCP/DCTCP, TIMELY, and packet-pair sinks use this factory. Same-leaf traffic
+has leaf IDs but no fabric measurement or valid measurement feedback.
+All fields are reset on pool reuse before current-flow leaf IDs are applied.
+These are simulator metadata fields; packet sizes are not increased.
+
+Run `bash htsim/tests/test-conga-metadata.sh` to verify actual transport sinks,
+ACK leaf reversal, feedback preservation through reverse ingress, and existing
+ECN behavior. `bash htsim/tests/test-dre.sh` also checks all metadata fields
+on data/ACK pool reuse and rejects invalid or mismatched observations.
+
+The tracker now uses the quoted paper rule: increment `X` by each transmitted
+packet's size, and every Tdre apply `X *= (1 - alpha)`. Its normalization is
+`X / ((link_bps / 8) * tau_seconds)`, where `tau = Tdre / alpha`. The 3-bit
+metric is `min(7, floor(normalized_load * 8))`. With the default 20 us interval
+and α = 0.125, tau is 160 us. These are configurable implementation defaults.
+
+Decay ticks are anchored at simulation time zero. Accesses apply
+`X *= pow(1-alpha, elapsed_whole_ticks)`, exactly accounting for skipped ticks
+without periodic timer events. There is no partial decay between ticks;
+a transmission exactly on a boundary applies the decay before adding its bytes.
+The old exponential update remains commented in `congestion/dre.cpp`.
+`--dre-tau` is now rejected; use `--dre-interval` and `--dre-alpha` instead.
+
+`.links.csv` includes final `dre_metric`, `dre_normalized_load`, and cumulative
+`dre_sent_bytes` (replacing `dre_offered_bytes`). The sent-byte counter equals
+`departed_bytes` on monitored fabric links. These columns are blank for
+unmonitored server links.
 
 Related components are grouped under `htsim/`:
 
@@ -205,8 +243,9 @@ stats/            # Experiment statistics (AI-generated notices retained)
 load-balancers/   # Load-balancer interface and ECMP policy
 ```
 
-Run `bash htsim/tests/test-dre.sh` to check decay, quantization, saturation,
-idle reads, packet reuse, dropped arrivals, CE propagation, and equivalent
+Run `bash htsim/tests/test-dre.sh` to check periodic tick boundaries, quantization,
+saturation, steady-state normalization, idle reads, packet reuse, exclusion of
+queued/dropped packets, CE propagation, and equivalent
 wrapped/unwrapped queue scheduling for all five queue disciplines.
 
 After building, run `node htsim/tests/test-ecmp.mjs` from the repository root
@@ -256,9 +295,9 @@ CONGA paths in the same experiment so they share topology and workload code.
 | File | Required changes |
 |---|---|
 | `htsim/test_conga_testbed.cpp` | Extend the implemented 12-core/24-leaf/768-server topology and route generator with selectable ECMP and CONGA policies. |
-| `htsim/packets/network.h` | Contains validity, `LBTag`, and `CE`; extend with source/destination leaf and feedback fields when implementing leaf tables. |
+| `htsim/packets/network.h` | Contains packet accessors and flow leaf context; `packets/conga-metadata.h` defines leaf IDs, validity, path measurement, and feedback fields. |
 | `htsim/packets/network.cpp` | Resets CONGA metadata in `Packet::set()` because packet objects are pooled and reused. |
-| `htsim/tcp.cpp` | Preserve or attach the feedback information required on reverse ACKs before the received data packet is freed. |
+| `htsim/packets/datapacket.h`, `htsim/tcp.cpp`, `htsim/timely.cpp`, `htsim/packetpair.cpp` | ACK factory and sinks copy observed path feedback before freeing the received data packet. Leaf-table-driven feedback selection can extend this later. |
 
 The following new files are recommended to keep CONGA logic out of generic
 simulator components:

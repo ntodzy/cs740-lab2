@@ -19,6 +19,7 @@ Packet::set(PacketFlow &flow,
     _flags = 0;
     _priority = 0;
     _conga = CongaMetadata(); // Reset metadata when a pooled packet is reused.
+    setCongaLeafIds(flow.sourceLeaf(), flow.destinationLeaf());
 }
 
 void

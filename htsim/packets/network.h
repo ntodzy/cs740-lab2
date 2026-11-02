@@ -52,10 +52,21 @@ class Packet
     inline uint32_t getPriority() {return _priority;}
 
     bool hasCongaMetadata() const { return _conga.valid; }
+    bool hasCongaFeedback() const { return _conga.feedbackValid; }
+    void setCongaLeafIds(uint32_t source, uint32_t destination) {
+        _conga.sourceLeaf = source;
+        _conga.destinationLeaf = destination;
+    }
     void initializeConga(uint32_t uplink) {
-        _conga = CongaMetadata();
-        _conga.valid = true;
+        // Reset only this direction's measurement. Keep piggybacked feedback.
+        _conga.valid = _conga.hasLeafIds();
         _conga.lbTag = uplink;
+        _conga.ce = 0;
+    }
+    void setCongaFeedback(uint32_t uplink, uint32_t metric) {
+        _conga.feedbackValid = _conga.hasLeafIds();
+        _conga.feedbackLbTag = uplink;
+        _conga.feedbackMetric = metric;
     }
     const CongaMetadata &congaMetadata() const { return _conga; }
     void accumulateCe(uint32_t metric) {
@@ -87,11 +98,20 @@ class PacketFlow : public Logged
     virtual ~PacketFlow() {};
     void logTraffic(Packet &pkt, Logged &location, TrafficLogger::TrafficEvent ev);
 
+    void setCongaLeafIds(uint32_t source, uint32_t destination) {
+        _sourceLeaf = source;
+        _destinationLeaf = destination;
+    }
+    uint32_t sourceLeaf() const { return _sourceLeaf; }
+    uint32_t destinationLeaf() const { return _destinationLeaf; }
+
     // How many packets of this flow are alive.
     uint32_t _nPackets;
 
     protected:
     TrafficLogger *_logger;
+    uint32_t _sourceLeaf = CongaMetadata::UNKNOWN_LEAF;
+    uint32_t _destinationLeaf = CongaMetadata::UNKNOWN_LEAF;
 };
 
 class PacketSink

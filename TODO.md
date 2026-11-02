@@ -46,21 +46,22 @@ Verified by `bash htsim/tests/test-routing-randomness.sh` and
 
 ## 4. Add CONGA packet metadata
 
-- [ ] Add source leaf, destination leaf, `LBTag`, `CE`, feedback tag, feedback metric, and validity fields to `Packet` (or a contained metadata struct).
-- [x] Add initial packet measurement metadata: validity, `LBTag`, and `CE` in `packets/`; leaf addressing and feedback fields remain above.
-- [x] Reset implemented metadata fields in `Packet::set()` because packets are pooled and reused; extend the reset when adding feedback.
-- [ ] Ensure `DataAck` receives feedback before the triggering `DataPacket` is freed.
-- [x] Test data and ACK reuse for stale measurement metadata leakage; extend coverage when feedback is added.
+- [x] Add source leaf, destination leaf, `LBTag`, `CE`, feedback tag, feedback metric, and independent measurement/feedback validity fields in `packets/conga-metadata.h`.
+- [x] Populate flow leaf context in experiment 2; assign forward IDs to data and reversed IDs to ACKs, including leaf 0.
+- [x] Reset all metadata fields in `Packet::set()` because packets are pooled and reused, then apply current flow addressing.
+- [x] Ensure `DataAck` copies the forward-path observation as feedback before the triggering `DataPacket` is freed (TCP/DCTCP, TIMELY, packet pair).
+- [x] Preserve feedback when the ACK's independent reverse-path CE measurement starts.
+- [x] Test data/ACK reuse, invalid/mismatched observations, leaf reversal, and actual sink feedback transfer (`test-dre.sh`, `test-conga-metadata.sh`).
 
 **Done when:** metadata survives each intended route hop and a newly allocated pooled packet starts clean.
 
 ## 5. Add congestion measurement
 
 - [x] Implement `congestion/DreTracker` and a queue-discipline-independent `DreQueueWrapper` using `EventList::Get().now()`.
-- [x] Decay by elapsed simulation time, add arriving bytes, normalize by link rate and the chosen time constant, then quantize.
+- [x] Apply the paper's periodic `X *= (1-alpha)` at Tdre boundaries; add transmitted bytes, normalize with `tau = Tdre/alpha`, and quantize to 3 bits. Exclude dropped/still-queued bytes.
 - [x] Expose `congestionMetric()` on each fabric wrapper for later local-uplink comparisons; reads account for idle time.
-- [x] Update packet `CE` with `max(old_ce, link_metric)` on monitored fabric links.
-- [x] Add deterministic tests for no elapsed time, long idle decay, saturation, quantization boundaries, queue behavior, drops, and packet reuse (`bash htsim/tests/test-dre.sh`).
+- [x] Update packet `CE` with `max(old_ce, link_metric)` on monitored fabric-link departures via the existing queue-service notifications.
+- [x] Add deterministic tests for exact periodic ticks, no inter-tick decay, skipped ticks, steady-state load, saturation, quantization, unchanged queue behavior, excluded drops, and packet reuse (`bash htsim/tests/test-dre.sh`).
 
 **Done when:** `CE` is monotonic along a path and the metric rises under load and decays while idle.
 
