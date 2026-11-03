@@ -120,9 +120,9 @@ data-mining distributions, the built-in workload means replace `--flowsize`.
 
 #### Experiment 2: CONGA
 
-Experiment 2 builds the complete leaf/core topology and uses a deterministic
-hash to select an equal-cost core per flow. CONGA table-driven selection is
-still tracked in `TODO.md`.
+Experiment 2 builds the complete leaf/core topology. ECMP hashes each flow to
+an equal-cost path; CONGA chooses a path using local DRE measurements and
+returned leaf congestion feedback. Each flow keeps its selected routes.
 
 The route callback captures a `shared_ptr<LoadBalancer>` by value. The topology
 prebuilds candidate `RoutePath` objects, each containing an opaque `pathId` and
@@ -144,10 +144,24 @@ as `-1` there. Same-leaf traffic returns a direct `RoutePath` through the same
 interface, using the topology's `directPathId`. The topology supplies
 `usesFabric` in the input context; it is not part of the returned path.
 
+The testbed sets `RouteContext::sourceLeafState` to a non-owning
+`const LeafSwitch*` for the source leaf. The context also carries a decision
+timestamp and `congestion[PathId]` entries containing the candidate's source
+uplink and its local DRE metric sampled at that timestamp. CONGA reads
+expiry-aware `ToLeaf[dstLeaf][sourceUplink]` snapshots from that source leaf.
+It never uses the opaque path ID as a congestion-table index. The leaf lives
+for the simulation lifetime; ECMP ignores congestion state.
+
 `EcmpLoadBalancer` in `load-balancers/ecmp.*` and `CongaLoadBalancer` in
-`load-balancers/conga.*` retain separate execution paths. The CONGA scaffold
-currently copies ECMP hashing and the same forward/reverse core choice; it
-does not use congestion to select paths. Detailed inline hop comments and
+`load-balancers/conga.*` retain separate execution paths. CONGA minimizes
+`max(localMetric, remoteMetric)` across candidates. Unknown or expired remote
+entries contribute zero; this is an optimistic cold-start/exploration policy,
+while local congestion still applies. Equal scores use a stable seeded hash
+of endpoints, flow ID, and path ID, with path ID resolving hash collisions.
+Tie-breaking is repeatable and independent of candidate ordering and the
+traffic RNG. Selection happens at flow creation, before transport start jitter;
+the selected candidate includes the reverse route through the same core.
+Detailed inline hop comments and
 tagging/feedback hooks live beside `buildFabricPath()` in the testbed, where
 this topology's queues, pipes, and leaf switches are connected. Candidate
 paths are cached per leaf pair, so their hop lists are not rebuilt per flow.
@@ -155,7 +169,7 @@ paths are cached per leaf pair, so their hop lists are not rebuilt per flow.
 | Flag | Default | Description |
 |---|---:|---|
 | `--duration` | `5` | Simulation duration in seconds. |
-| `--lb` | `ecmp` | `ecmp` selects the baseline; `conga` runs a separate scaffold currently using identical ECMP selection and tagging. |
+| `--lb` | `ecmp` | `ecmp` selects a hash-based path; `conga` minimizes the maximum local/remote congestion metric. |
 | `--small` | `0` | `1` uses 2 cores, 2 leaves, and 2 servers per leaf for debugging; `0` uses the required full topology. |
 | `--routingseed` | value of `--rngseed` | Independent seed for load-balancer choices and future tie-breaking. |
 | `--utilization` | `0.1` | Offered load relative to aggregate server-facing capacity. |
@@ -182,8 +196,9 @@ jitter, and endpoints). Load balancers use a separate `std::mt19937` engine
 seeded by `--routingseed` for randomized policies; ECMP directly hashes the
 source host, destination host, generator flow sequence ID, and routing seed.
 Repeated requests for the same flow select the same core regardless of call
-order. Future policies must use the separate engine for tie-breaking
-instead of `rand()`/`drand()`. Changing the routing seed or number of policy
+order. CONGA tie-breaking hashes the routing seed and flow/path identities;
+future randomized policies must use the separate engine instead of
+`rand()`/`drand()`. Changing the routing seed or number of policy
 draws therefore leaves the traffic demands unchanged. Keep traffic seed,
 topology, workload, load, and duration identical when comparing policies.
 Experiment 3 retains its original shared random stream.
@@ -199,11 +214,23 @@ Experiment 2 also writes these files alongside the `--logfile` prefix:
 | `.routes.csv` | Flow sequence ID (matching the number in `srcN`), source/destination host, and chosen core; `-1` means same-leaf traffic. |
 | `.links.csv` | Each directional queue's rate, enqueue/departure/drop packet and byte counts, and measured utilization fraction. Counters include data and ACK packets. |
 | `.summary.csv` | Generated, completed, and incomplete flow counts, plus `route_violations` (fabric departures using a different core than earlier packets/ACKs of that flow; expected zero). |
+| `.decisions.csv` | One routing decision per generated flow: mode, timestamp, endpoints/leaves, path ID, source uplink, local/remote metric, remote validity, and combined score. Direct routes have blank congestion fields. |
+| `.selections.csv` | Selection counts grouped by mode, leaf pair, path ID, and uplink, including the number selected without fresh remote feedback. |
 
 Statistics are flushed after the simulation event loop. Utilization is
 departed bytes × 8 divided by link rate × elapsed simulation time; generated
 flows include those scheduled to start after the cutoff due to start jitter.
 CSV output adds aggregate counters without periodic queue sampling.
+Decision metrics are decision-time observations, not the final link snapshot
+in `.links.csv`. Statistics are recorded by the testbed after `selectRoute()`;
+the load balancer performs no file I/O. Selection counts include direct routes,
+which are not counted as missing remote feedback.
+
+Run `bash htsim/tests/test-conga.sh` for controlled selection tests: local and
+remote bottlenecks, cold start/expiry, path IDs independent of uplink numbers,
+deterministic ties, invalid routing contexts, and a TCP/DRE feedback round trip
+that changes a later flow's selected path. `node htsim/tests/test-ecmp.mjs`
+checks both modes, all queue disciplines, and decision/selection CSV counts.
 
 Every directional fabric link also has a `DreQueueWrapper` around its existing
 queue. This preserves FIFO/FQ/AFQ/PQ/SFQ behavior. Its independent DRE measures
@@ -214,9 +241,9 @@ increment X and accumulate the maximum metric in CE before forwarding; it
 also delegates logging to the original statistics logger. Data and ACK
 traversals are measured independently. Experiment 2 now installs a `LeafSwitch`
 at each leaf to collect observations and exchange table-selected feedback on
-both data and ACK packets. Congestion-aware CONGA route selection remains
-unimplemented; both `--lb=ecmp` and the `--lb=conga` scaffold exercise these hooks
-on static paths selected by the same hash.
+both data and ACK packets. ECMP ignores the measurements when choosing paths;
+CONGA uses them for subsequent flow selections. Neither mode reroutes packets
+of an already-created flow.
 
 The packet metadata in `packets/conga-metadata.h` contains:
 
@@ -351,7 +378,7 @@ CONGA paths in the same experiment so they share topology and workload code.
 | File | Required changes |
 |---|---|
 | `htsim/test_conga_testbed.cpp` | Extend the implemented 12-core/24-leaf/768-server topology and route generator with selectable ECMP and CONGA policies. |
-| `htsim/load-balancers/conga.h`, `htsim/load-balancers/conga.cpp` | Replace the scaffold's copied ECMP selection and evolve its independent route construction for CONGA. |
+| `htsim/load-balancers/conga.h`, `htsim/load-balancers/conga.cpp` | CONGA candidate validation, maximum local/remote metric scoring, deterministic tie-breaking, and route construction. |
 | `htsim/load-balancers/ecmp.*`, `htsim/load-balancers/route-context.h` | ECMP selection, opaque path IDs, variable-length candidate hops, and complete `RoutePath` results; core mapping stays in the testbed. |
 | `htsim/packets/network.h` | Contains packet accessors and flow leaf context; `packets/conga-metadata.h` defines leaf IDs, validity, path measurement, and feedback fields. |
 | `htsim/packets/network.cpp` | Resets CONGA metadata in `Packet::set()` because packet objects are pooled and reused. |
@@ -362,7 +389,7 @@ simulator components:
 
 | New file | Responsibility |
 |---|---|
-| `htsim/leaf-switches/leafswitch.h`, `htsim/leaf-switches/leafswitch.cpp` | Implemented To-/From-Leaf tables, receive processing, changed-first round-robin feedback, and expiry; expose To-Leaf snapshots for future CONGA selection. |
+| `htsim/leaf-switches/leafswitch.h`, `htsim/leaf-switches/leafswitch.cpp` | To-/From-Leaf tables, receive processing, changed-first round-robin feedback, expiry, and read-only To-Leaf snapshots for CONGA selection. |
 | `htsim/congestion/dre.*`, `htsim/congestion/dre-queue-wrapper.*` (implemented) | Maintain simulation-time congestion estimates independently of queue discipline and update packet `CE` on fabric links. |
 
 Depending on the measurement design, also update `htsim/flow-generator.h/.cpp`

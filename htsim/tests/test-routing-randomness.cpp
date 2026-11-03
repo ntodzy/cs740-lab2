@@ -1,5 +1,4 @@
 #include "../load-balancers/ecmp.h"
-#include "../load-balancers/conga.h"
 
 #include <cstdlib>
 #include <iostream>
@@ -116,7 +115,6 @@ int main()
     EcmpLoadBalancer first(42);
     EcmpLoadBalancer repeat(42);
     EcmpLoadBalancer different(43);
-    CongaLoadBalancer scaffold(42);
     std::vector<RoutePath> paths(12);
     for (uint32_t index = 0; index < paths.size(); ++index) {
         paths[index].pathId = PathId(index);
@@ -141,10 +139,6 @@ int main()
             return 1;
         }
         ++counts[choice.value];
-        if (choice != selectId(scaffold, i % 768, (i + 37) % 768, i)) {
-            std::cerr << "CONGA scaffold differs from its ECMP placeholder\n";
-            return 1;
-        }
         differs |= choice != selectId(different, i % 768, (i + 37) % 768, i);
     }
     if (!differs || std::rand() != expectedTrafficDraw) {
@@ -161,6 +155,5 @@ int main()
     }
     std::cout << "Hash stability, 12-core distribution, and traffic RNG isolation passed\n";
     checkRouteAbstraction<EcmpLoadBalancer>();
-    checkRouteAbstraction<CongaLoadBalancer>();
     std::cout << "Opaque IDs, variable-length paths, local routes, and missing-candidate checks passed\n";
 }

@@ -1,14 +1,17 @@
 // AI-generated: created by OpenAI Codex.
 #include "experiment-stats.h"
+#include "../leaf-switches/leafswitch.h"
 
 #include <iomanip>
 #include <stdexcept>
+#include <algorithm>
 
 ExperimentStats::ExperimentStats(const std::string &prefix)
     : _linkFile(prefix + ".links.csv"), _routeFile(prefix + ".routes.csv"),
-      _summaryFile(prefix + ".summary.csv")
+      _summaryFile(prefix + ".summary.csv"), _decisionFile(prefix + ".decisions.csv"),
+      _selectionFile(prefix + ".selections.csv")
 {
-    if (!_linkFile || !_routeFile || !_summaryFile) {
+    if (!_linkFile || !_routeFile || !_summaryFile || !_decisionFile || !_selectionFile) {
         throw std::runtime_error("Cannot open experiment statistics: " + prefix);
     }
 }
@@ -50,8 +53,67 @@ void ExperimentStats::recordRoute(uint32_t source, uint32_t destination, int cor
     _routes.push_back(Route{source, destination, core});
 }
 
+void ExperimentStats::recordDecision(const std::string &mode, const RouteContext &context,
+                                    const RoutePath &path)
+{
+    Decision decision;
+    decision.flowId = context.flowId;
+    decision.time = context.now;
+    decision.mode = mode;
+    decision.source = context.srcHost;
+    decision.destination = context.dstHost;
+    decision.sourceLeaf = context.srcLeaf;
+    decision.destinationLeaf = context.dstLeaf;
+    decision.usesFabric = context.usesFabric;
+    decision.pathId = path.pathId;
+    if (context.usesFabric) {
+        if (context.sourceLeafState == nullptr) {
+            throw std::invalid_argument("Decision statistics require source leaf state");
+        }
+        const CandidateCongestion &measurement = context.congestion.at(path.pathId);
+        const auto remote = context.sourceLeafState->toLeaf(context.dstLeaf,
+            measurement.sourceUplink, context.now);
+        decision.sourceUplink = measurement.sourceUplink;
+        decision.localMetric = measurement.localMetric;
+        decision.remoteValid = remote.valid;
+        decision.remoteMetric = remote.valid ? remote.metric : 0;
+        decision.score = std::max(decision.localMetric, decision.remoteMetric);
+    }
+    const int uplink = decision.usesFabric ? static_cast<int>(decision.sourceUplink) : -1;
+    SelectionCount &counts = _selections[SelectionKey(mode, decision.sourceLeaf,
+        decision.destinationLeaf, path.pathId.value, uplink)];
+    ++counts.selected;
+    if (decision.usesFabric && !decision.remoteValid) ++counts.unknownRemote;
+    _decisions.push_back(decision);
+}
+
 void ExperimentStats::write(const FlowGenerator &generator, simtime_picosec endTime)
 {
+    _decisionFile << "flow_id,time_us,mode,source,destination,source_leaf,destination_leaf,"
+                     "uses_fabric,path_id,source_uplink,local_metric,remote_metric,remote_valid,score\n";
+    for (const auto &decision : _decisions) {
+        _decisionFile << decision.flowId << ',' << std::setprecision(17) << timeAsUs(decision.time)
+                      << ',' << decision.mode << ',' << decision.source << ',' << decision.destination
+                      << ',' << decision.sourceLeaf << ',' << decision.destinationLeaf
+                      << ',' << decision.usesFabric << ',' << decision.pathId.value;
+        if (decision.usesFabric) {
+            _decisionFile << ',' << decision.sourceUplink << ',' << decision.localMetric
+                          << ',' << decision.remoteMetric << ',' << decision.remoteValid
+                          << ',' << decision.score;
+        } else {
+            _decisionFile << ",,,,,"; // No fabric metrics or uplink for a direct route.
+        }
+        _decisionFile << '\n';
+    }
+    _selectionFile << "mode,source_leaf,destination_leaf,path_id,source_uplink,"
+                      "selected_flows,unknown_remote_flows\n";
+    for (const auto &entry : _selections) {
+        const auto &key = entry.first;
+        _selectionFile << std::get<0>(key) << ',' << std::get<1>(key) << ','
+                       << std::get<2>(key) << ',' << std::get<3>(key) << ',';
+        if (std::get<4>(key) >= 0) _selectionFile << std::get<4>(key);
+        _selectionFile << ',' << entry.second.selected << ',' << entry.second.unknownRemote << '\n';
+    }
     _routeFile << "flow_id,source,destination,core\n";
     for (size_t i = 0; i < _routes.size(); ++i) {
         const Route &route = _routes[i];
@@ -85,7 +147,9 @@ void ExperimentStats::write(const FlowGenerator &generator, simtime_picosec endT
     _linkFile.flush();
     _routeFile.flush();
     _summaryFile.flush();
-    if (!_linkFile || !_routeFile || !_summaryFile) {
+    _decisionFile.flush();
+    _selectionFile.flush();
+    if (!_linkFile || !_routeFile || !_summaryFile || !_decisionFile || !_selectionFile) {
         throw std::runtime_error("Failed to write experiment statistics");
     }
 }

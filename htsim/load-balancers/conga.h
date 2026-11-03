@@ -3,7 +3,7 @@
 
 #include "load-balancer.h"
 
-// CONGA scaffold: independent execution path, currently using ECMP selection.
+// Select the least-congested candidate using local DRE and returned leaf feedback.
 class CongaLoadBalancer : public LoadBalancer
 {
 public:

@@ -7,7 +7,7 @@ printf 'Test artifacts: %s\n' "$test_dir"
 
 make
 "${CXX:-clang++}" -std=c++11 -Wall -Wextra tests/test-routing-randomness.cpp \
-    load-balancers/ecmp.cpp load-balancers/conga.cpp -o "$test_dir/check-rng"
+    load-balancers/ecmp.cpp -o "$test_dir/check-rng"
 "$test_dir/check-rng"
 
 for workload in uniform pareto enterprise datamining; do
@@ -29,9 +29,6 @@ for workload in uniform pareto enterprise datamining; do
     done
     for seed in 42 43; do
         cmp "$test_dir/$workload-ecmp-$seed.demands" "$test_dir/$workload-conga-$seed.demands"
-        for csv in routes links summary; do
-            cmp "$test_dir/$workload-ecmp-$seed.$csv.csv" "$test_dir/$workload-conga-$seed.$csv.csv"
-        done
     done
-    printf '%s: identical demands across routing seeds; CONGA scaffold matches ECMP statistics\n' "$workload"
+    printf '%s: identical demands across routing seeds and ECMP/CONGA policies\n' "$workload"
 done

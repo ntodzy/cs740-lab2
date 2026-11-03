@@ -7,15 +7,15 @@ This checklist orders work by dependency. Keep ECMP and CONGA on the same topolo
 - [x] Confirm the network configuration: 12 core switches with 24 × 40 Gb/s ports each; 24 leaf switches with 12 × 40 Gb/s uplinks and 32 × 10 Gb/s server-facing ports each; 768 servers total, each connected to exactly one leaf by a 10 Gb/s link. The leaf/core layer is a full mesh.
 - [ ] Choose link propagation delay and justify queue sizes already provided by the skeleton.
 - [ ] Define the offered-load denominator and traffic locality policy.
-- [ ] Choose DRE time constant, update rule, normalization, and metric quantization.
-- [ ] Define unknown/stale table values, feedback scheduling, and deterministic tie-breaking.
+- [x] Choose DRE time constant, update rule, normalization, and metric quantization: periodic 20 us ticks, alpha 0.125, tau 160 us, transmitted bytes, and 3-bit normalized metric; interval/alpha are configurable.
+- [x] Define unknown/stale table values, feedback scheduling, and deterministic tie-breaking: 10 ms expiry, unknown remote contributes zero, changed-first round-robin feedback, stable seeded per-flow/per-path tie ranks.
 - [ ] Define warm-up, measurement window, incomplete-flow handling, repetitions, and seeds.
 
 ## 1. Establish a reproducible baseline
 
 - [x] Run `make -C htsim` and preserve warning-free behavior for new code.
 - [x] Smoke-test experiments 1 and 3 with short durations.
-- [x] Add an `--lb=ecmp|conga` argument to experiment 2 (CONGA now runs an independent scaffold with copied ECMP selection and tagging).
+- [x] Add an `--lb=ecmp|conga` argument to experiment 2 with real congestion-aware CONGA selection and a separate ECMP baseline.
 - [x] Separate experiment 2 traffic randomness (`--rngseed`) from routing/tie-break randomness (`--routingseed`); load balancers own an independent engine.
 - [x] Add `--small=1` for fast debugging: 2 cores, 2 leaves, and 2 servers per leaf.
 
@@ -79,21 +79,26 @@ Verified by `bash htsim/tests/test-routing-randomness.sh` and
 Verified by `bash htsim/tests/test-leaf-feedback.sh`: actual TCP ACK round trip,
 different forward/return uplinks, exact cell isolation, data-carried feedback,
 changed-entry priority, round-robin refresh, invalid metadata, and expiry/reactivation.
-CONGA route selection remains step 7; both modes currently run leaf feedback on
-paths selected by the same ECMP hash.
+Both modes run leaf feedback; CONGA consumes the source leaf's To-Leaf state
+when selecting later flows, while ECMP retains its independent hash policy.
 
 ## 7. Implement CONGA route selection
 
-- [x] Split ECMP and CONGA route construction into each balancer's `selectRoute()` implementation; copy current tagging, comments, and ECMP selection into the CONGA scaffold.
+- [x] Split ECMP and CONGA route construction into each balancer's `selectRoute()` implementation; preserve existing tagging hooks and detailed topology comments.
 - [x] Return a complete `RoutePath` with an opaque ID and owned forward/reverse hop vectors, including direct same-leaf paths; keep core mapping, detailed hop comments, and tagging-hook wiring in the topology. Test non-index IDs (including zero), different forward/reverse hop counts, and independent ownership of returned vectors.
 - [x] Keep selection entirely in each policy's `selectRoute(context)`, derive path counts from the context, and use a distinct `PathId` type. Test varying candidate counts on one policy instance.
-- [ ] For every eligible uplink compute `max(local[u], ToLeaf[destination][u])`.
-- [ ] Choose the minimum using deterministic tie-breaking that does not alter the traffic RNG stream.
-- [ ] Invoke selection once in the route callback, treating the full flow as one flowlet.
-- [ ] Add counters for selected uplinks and selection metrics.
-- [ ] Create a controlled asymmetric-congestion test.
+- [x] For every eligible uplink compute `max(local[u], ToLeaf[destination][u])`, using explicit path-to-uplink mappings and a shared decision timestamp. Unknown/expired remote metrics contribute zero.
+- [x] Choose the minimum using stable seeded hash ranks over endpoint/flow/path identities, with path ID breaking hash collisions; do not alter the traffic RNG stream.
+- [x] Invoke selection once in the route callback at flow creation, treating the full flow as one flowlet and retaining its forward/reverse routes.
+- [x] Add decision-time chosen metrics in `.decisions.csv` and per-leaf-pair/path/uplink selection and unknown-feedback counts in `.selections.csv`; record outside policy code.
+- [x] Create controlled local/remote asymmetric-congestion tests, including feedback changing a later flow's choice while an existing flow keeps its route (`bash htsim/tests/test-conga.sh`).
 
 **Done when:** the selected uplink is the expected arg-min and all packets in that flow retain the route.
+
+Regression checks: `bash htsim/tests/test-conga.sh`,
+`bash htsim/tests/test-routing-randomness.sh`, and `node htsim/tests/test-ecmp.mjs`.
+They cover malformed contexts, expiry, arbitrary path IDs, tie repeatability/order
+independence, traffic RNG isolation, all workloads, and decision/counter consistency.
 
 ## 8. Add experiment output
 

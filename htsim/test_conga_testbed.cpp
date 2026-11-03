@@ -58,6 +58,7 @@ LeafSwitch *leafSwitches[N_LEAF] = {};
 // the core mapping; cached hop lists avoid rebuilding candidates for every flow.
 std::vector<RoutePath> fabricPaths[N_LEAF][N_LEAF];
 std::map<PathId, uint32_t> coreForPath;
+std::map<PathId, uint32_t> sourceUplinkForPath;
 
 std::shared_ptr<ExperimentStats> runStats;
 FlowGenerator *runGenerator = NULL;
@@ -74,6 +75,7 @@ void nameObject(Logged &object, const std::string &name, Logfile &logfile,
 void generateRandomRoute(LoadBalancer &loadBalancer,
                          const TopologyConfig &topology,
                          ExperimentStats &stats,
+                         const std::string &mode,
                          route_t *&fwd,
                          route_t *&rev,
                          uint32_t &src,
@@ -151,7 +153,7 @@ conga_testbed(const ArgList &args, Logfile &logfile)
         loadBalancer = make_shared<EcmpLoadBalancer>(routingSeed);
     } else if (lb == "conga") {
         loadBalancer = make_shared<CongaLoadBalancer>(routingSeed);
-        cerr << "CONGA scaffold: using ECMP selection; congestion-aware selection is pending\n";
+        cerr << "CONGA selection: max(local DRE, fresh remote feedback), stable per-flow ties\n";
     } else {
         cerr << "Unknown load balancer: " << lb << "; expected ecmp or conga\n";
         exit(1);
@@ -216,8 +218,10 @@ conga_testbed(const ArgList &args, Logfile &logfile)
     // This topology uses the core number as its path ID; balancers do not
     // depend on that convention and only return the selected candidate's ID.
     coreForPath.clear();
+    sourceUplinkForPath.clear();
     for (uint32_t core = 0; core < topology.cores; ++core) {
         coreForPath[PathId(core)] = core;
+        sourceUplinkForPath[PathId(core)] = core;
     }
 
     // Pre-compute all candidate paths between every pair of leaves.
@@ -267,9 +271,9 @@ conga_testbed(const ArgList &args, Logfile &logfile)
     linkspeed_bps flowRate = llround(utilization * LEAF_SPEED * topology.nodes());
     // Capture ownership by value: the policy must survive this setup function.
     auto stats = runStats;
-    route_gen_t fnGenerateRoute = [loadBalancer, topology, stats](route_t *&fwd, route_t *&rev,
+    route_gen_t fnGenerateRoute = [loadBalancer, topology, stats, lb](route_t *&fwd, route_t *&rev,
                                                uint32_t &src, uint32_t &dst) {
-        conga::generateRandomRoute(*loadBalancer, topology, *stats, fwd, rev, src, dst);
+        conga::generateRandomRoute(*loadBalancer, topology, *stats, lb, fwd, rev, src, dst);
     };
     FlowGenerator *flowGenerator = new FlowGenerator(endpoint,
                                                       fnGenerateRoute,
@@ -329,6 +333,7 @@ void
 conga::generateRandomRoute(LoadBalancer &loadBalancer,
                            const TopologyConfig &topology,
                            ExperimentStats &stats,
+                           const std::string &mode,
                            route_t *&fwd,
                            route_t *&rev,
                            uint32_t &src,
@@ -351,13 +356,24 @@ conga::generateRandomRoute(LoadBalancer &loadBalancer,
     context.dstHost = dst;
     context.srcLeaf = srcLeaf;
     context.dstLeaf = dstLeaf;
+    context.sourceLeafState = leafSwitches[srcLeaf];
     context.flowId = stats.nextFlowId();
+    context.now = EventList::Get().now();
     context.usesFabric = srcLeaf != dstLeaf;
     context.forward.access = {qServerLeaf[srcLeaf][srcServer], pServerLeaf[srcLeaf][srcServer]};
     context.forward.delivery = {qLeafServer[dstLeaf][dstServer], pLeafServer[dstLeaf][dstServer]};
     context.reverse.access = {qServerLeaf[dstLeaf][dstServer], pServerLeaf[dstLeaf][dstServer]};
     context.reverse.delivery = {qLeafServer[srcLeaf][srcServer], pLeafServer[srcLeaf][srcServer]};
+    // Snapshot every eligible local uplink at one simulation timestamp in both
+    // modes. Path IDs identify candidates; uplink tags identify leaf-table cells.
+    for (const auto &candidate : context.paths) {
+        const uint32_t uplink = sourceUplinkForPath.at(candidate.pathId);
+        context.congestion.emplace(candidate.pathId, CandidateCongestion{
+            uplink, wLeafCore[srcLeaf][uplink]->congestionMetric(context.now)});
+    }
     RoutePath path = loadBalancer.selectRoute(context);
+    // Recording reads the same decision-time snapshots, outside policy code.
+    stats.recordDecision(mode, context, path);
     fwd = new route_t(std::move(path.forward));
     rev = new route_t(std::move(path.reverse));
     // Preserve the existing core-based CSV schema at the topology boundary.

@@ -82,7 +82,7 @@ Packets are recycled through `PacketDB`. Any new metadata must therefore be init
 
 The random route callback chooses source/destination hosts and constructs the entire path. Consequently, the present framework chooses a path **once per flow**. That directly supports the lab simplification “one flow is one flowlet”: select a CONGA uplink in the callback and keep every packet of that flow on the returned route.
 
-In experiment 2, endpoint selection, arrivals, start jitter, and workload sizes use the traffic `rand()` stream seeded by `--rngseed`. ECMP hashes source/destination host IDs, the generator flow sequence ID, and `--routingseed` (defaulting to the traffic seed). Load balancers also own an independent `std::mt19937` engine for future randomized policies and CONGA tie-breaking. This separation keeps demands identical when policies consume different numbers of random values. Experiment 3 still uses its original shared stream. Regression checks are available via `bash htsim/tests/test-routing-randomness.sh` and `node htsim/tests/test-ecmp.mjs` from the repository root.
+In experiment 2, endpoint selection, arrivals, start jitter, and workload sizes use the traffic `rand()` stream seeded by `--rngseed`. ECMP hashes source/destination host IDs, the generator flow sequence ID, and `--routingseed` (defaulting to the traffic seed). CONGA hashes endpoint/flow/path identities and that seed to rank tied candidates. Load balancers also own an independent `std::mt19937` engine for future randomized policies. This separation keeps demands identical when policies consume different numbers of random values. Experiment 3 still uses its original shared stream. Regression checks are available via `bash htsim/tests/test-routing-randomness.sh` and `node htsim/tests/test-ecmp.mjs` from the repository root.
 
 ## 6. Reading the existing topology example
 
@@ -106,7 +106,7 @@ The cleanest design is to keep policy at leaves and measurement at fabric queues
 | `LBTag`, `CE`, feedback tag/metric, validity | Base `Packet`, so data and ACK packets can carry it |
 | DRE-like link metric | Implemented in `congestion/DreTracker`, owned by a `DreQueueWrapper` around each directional fabric queue |
 | To-/From-Leaf tables | A `LeafSwitch` implementing `PacketSink` |
-| Path choice | Each policy implements selection directly in `selectRoute(context)`; congestion-aware CONGA choice is pending |
+| Path choice | Each policy implements selection in `selectRoute(context)`; CONGA compares local DRE snapshots with returned To-Leaf metrics |
 | ECMP/CONGA selection | Experiment argument such as `--lb=ecmp` or `--lb=conga` |
 
 A useful route shape is:
@@ -140,9 +140,12 @@ Both tables invalidate entries after 10 ms without a received update, checked
 lazily on reads and selection. Sending feedback does not refresh the underlying
 observation. Unknown/expired differs from measured zero; no reverse traffic
 means no feedback transmission. These are documented lab policies, separate
-from DRE decay. Congestion-aware CONGA selection remains future work;
-`--lb=conga` now runs `load-balancers/conga.*`, a separate scaffold with copied
-ECMP hashing and forward/reverse execution paths. Each balancer's `selectRoute()`
+from DRE decay. `--lb=conga` runs `load-balancers/conga.*`, which minimizes
+`max(localMetric, remoteMetric)` for each mapped source uplink. The context
+carries local DRE snapshots and a shared decision timestamp; fresh remote
+metrics come from the source leaf's To-Leaf table. Unknown/expired feedback
+contributes zero. A stable seeded hash ranks equally good candidates without
+drawing from the traffic RNG. Each balancer's `selectRoute()`
 owns its path selection and route assembly. The testbed generates endpoints and
 prebuilds candidate `RoutePath` objects with opaque IDs and variable-length
 forward/reverse hop lists, including tagging/feedback hooks. Its
