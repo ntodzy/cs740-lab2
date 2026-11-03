@@ -62,9 +62,7 @@ StocFairQueue::completeService()
     }
 
     pkt->flow().logTraffic(*pkt, *this, TrafficLogger::PKT_DEPART);
-    if (_logger) {
-        _logger->logQueue(*this, QueueLogger::PKT_SERVICE, *pkt);
-    }
+    notifyService(*pkt);
 
     applyEcnMark(*pkt);
     pkt->sendOn();

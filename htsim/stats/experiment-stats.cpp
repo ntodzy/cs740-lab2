@@ -1,10 +1,8 @@
 // AI-generated: created by OpenAI Codex.
 #include "experiment-stats.h"
-#include "../leaf-switches/leafswitch.h"
 
 #include <iomanip>
 #include <stdexcept>
-#include <algorithm>
 
 ExperimentStats::ExperimentStats(const std::string &prefix)
     : _linkFile(prefix + ".links.csv"), _routeFile(prefix + ".routes.csv"),
@@ -48,42 +46,19 @@ void ExperimentStats::logQueue(Queue &queue, QueueEvent event, Packet &packet)
     }
 }
 
-void ExperimentStats::recordRoute(uint32_t source, uint32_t destination, int core)
+void ExperimentStats::recordRoute(uint64_t flowId, uint32_t source, uint32_t destination, int core)
 {
-    _routes.push_back(Route{source, destination, core});
+    _routes.push_back(Route{flowId, source, destination, core});
 }
 
-void ExperimentStats::recordDecision(const std::string &mode, const RouteContext &context,
-                                    const RoutePath &path)
+void ExperimentStats::recordDecision(const RouteDecision &decision)
 {
-    Decision decision;
-    decision.flowId = context.flowId;
-    decision.time = context.now;
-    decision.mode = mode;
-    decision.source = context.srcHost;
-    decision.destination = context.dstHost;
-    decision.sourceLeaf = context.srcLeaf;
-    decision.destinationLeaf = context.dstLeaf;
-    decision.usesFabric = context.usesFabric;
-    decision.pathId = path.pathId;
-    if (context.usesFabric) {
-        if (context.sourceLeafState == nullptr) {
-            throw std::invalid_argument("Decision statistics require source leaf state");
-        }
-        const CandidateCongestion &measurement = context.congestion.at(path.pathId);
-        const auto remote = context.sourceLeafState->toLeaf(context.dstLeaf,
-            measurement.sourceUplink, context.now);
-        decision.sourceUplink = measurement.sourceUplink;
-        decision.localMetric = measurement.localMetric;
-        decision.remoteValid = remote.valid;
-        decision.remoteMetric = remote.valid ? remote.metric : 0;
-        decision.score = std::max(decision.localMetric, decision.remoteMetric);
-    }
-    const int uplink = decision.usesFabric ? static_cast<int>(decision.sourceUplink) : -1;
-    SelectionCount &counts = _selections[SelectionKey(mode, decision.sourceLeaf,
-        decision.destinationLeaf, path.pathId.value, uplink)];
+    const bool measured = decision.usesFabric && decision.metrics.available;
+    const int uplink = measured ? static_cast<int>(decision.metrics.sourceUplink) : -1;
+    SelectionCount &counts = _selections[SelectionKey(decision.mode, decision.sourceLeaf,
+        decision.destinationLeaf, decision.pathId.value, uplink)];
     ++counts.selected;
-    if (decision.usesFabric && !decision.remoteValid) ++counts.unknownRemote;
+    if (measured && !decision.metrics.remoteValid) ++counts.unknownRemote;
     _decisions.push_back(decision);
 }
 
@@ -96,12 +71,12 @@ void ExperimentStats::write(const FlowGenerator &generator, simtime_picosec endT
                       << ',' << decision.mode << ',' << decision.source << ',' << decision.destination
                       << ',' << decision.sourceLeaf << ',' << decision.destinationLeaf
                       << ',' << decision.usesFabric << ',' << decision.pathId.value;
-        if (decision.usesFabric) {
-            _decisionFile << ',' << decision.sourceUplink << ',' << decision.localMetric
-                          << ',' << decision.remoteMetric << ',' << decision.remoteValid
-                          << ',' << decision.score;
+        if (decision.usesFabric && decision.metrics.available) {
+            _decisionFile << ',' << decision.metrics.sourceUplink << ',' << decision.metrics.localMetric
+                          << ',' << decision.metrics.remoteMetric << ',' << decision.metrics.remoteValid
+                          << ',' << decision.metrics.score;
         } else {
-            _decisionFile << ",,,,,"; // No fabric metrics or uplink for a direct route.
+            _decisionFile << ",,,,,"; // Direct route or no supplied measurements.
         }
         _decisionFile << '\n';
     }
@@ -117,7 +92,7 @@ void ExperimentStats::write(const FlowGenerator &generator, simtime_picosec endT
     _routeFile << "flow_id,source,destination,core\n";
     for (size_t i = 0; i < _routes.size(); ++i) {
         const Route &route = _routes[i];
-        _routeFile << i << ',' << route.source << ',' << route.destination
+        _routeFile << route.flowId << ',' << route.source << ',' << route.destination
                    << ',' << route.core << '\n';
     }
     _linkFile << "link,bitrate_bps,enqueued_packets,enqueued_bytes,departed_packets,"

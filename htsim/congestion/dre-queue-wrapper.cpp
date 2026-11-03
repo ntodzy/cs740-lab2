@@ -1,19 +1,20 @@
 #include "dre-queue-wrapper.h"
+#include <stdexcept>
 
 DreQueueWrapper::DreQueueWrapper(Queue &queue, linkspeed_bps rate,
                                  simtime_picosec interval,
                                  double alpha, int sourceUplink)
-    : _queue(queue), _dre(rate, interval, alpha), _sourceUplink(sourceUplink),
-      _downstreamLogger(queue.logger())
+    : _queue(queue), _dre(rate, interval, alpha), _sourceUplink(sourceUplink)
 {
-    // Every queue discipline reports PKT_SERVICE immediately before sendOn().
-    // Interpose on that notification, retaining the original statistics logger.
-    _queue.setLogger(this);
+    if (_queue.serviceHook() != nullptr) {
+        throw std::invalid_argument("Queue already has a packet service hook");
+    }
+    _queue.setServiceHook(this);
 }
 
 DreQueueWrapper::~DreQueueWrapper()
 {
-    _queue.setLogger(_downstreamLogger);
+    if (_queue.serviceHook() == this) _queue.setServiceHook(nullptr);
 }
 
 void DreQueueWrapper::receivePacket(Packet &packet)
@@ -30,14 +31,9 @@ void DreQueueWrapper::receivePacket(Packet &packet)
     // Do not touch packet here: the queue may have dropped and freed it.
 }
 
-void DreQueueWrapper::logQueue(Queue &queue, QueueEvent event, Packet &packet)
+void DreQueueWrapper::onPacketService(Queue &, Packet &packet)
 {
-    if (event == PKT_SERVICE) {
-        const auto now = EventList::Get().now();
-        _dre.recordPacket(packet.size(), now);
-        packet.accumulateCe(_dre.metric(now));
-    }
-    if (_downstreamLogger != nullptr) {
-        _downstreamLogger->logQueue(queue, event, packet);
-    }
+    const auto now = EventList::Get().now();
+    _dre.recordPacket(packet.size(), now);
+    packet.accumulateCe(_dre.metric(now));
 }

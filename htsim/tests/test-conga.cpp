@@ -1,4 +1,5 @@
 #include "../load-balancers/conga.h"
+#include "../load-balancers/ecmp.h"
 #include "../leaf-switches/leafswitch.h"
 #include "../congestion/dre-queue-wrapper.h"
 #include "../packets/datapacket.h"
@@ -57,9 +58,18 @@ void configure(RouteContext &context, const LeafSwitch &source)
     context.dstHost = 29;
     context.srcLeaf = source.leafId();
     context.dstLeaf = 1;
-    context.sourceLeafState = &source;
     context.usesFabric = true;
     context.now = EventList::Get().now();
+}
+
+void refreshFeedback(RouteContext &context, const LeafSwitch &source)
+{
+    for (auto &entry : context.congestion) {
+        auto &measurement = entry.second;
+        const auto remote = source.toLeaf(context.dstLeaf, measurement.sourceUplink, context.now);
+        measurement.remoteMetric = remote.metric;
+        measurement.remoteValid = remote.valid;
+    }
 }
 
 void expectPath(CongaLoadBalancer &policy, const RouteContext &context, PathId expected,
@@ -100,19 +110,27 @@ void testLocalRemoteAndStale()
     context.congestion[PathId(0)] = CandidateCongestion{0, 5};
     context.congestion[PathId(9001)] = CandidateCongestion{1, 7};
     CongaLoadBalancer policy(42);
+    refreshFeedback(context, source);
     expectPath(policy, context, PathId(101), "Local congestion did not choose the minimum");
 
     feedback(source, 1, 2, 6);
+    // Table changes are invisible until a new context snapshot is constructed.
+    expectPath(policy, context, PathId(101), "Selection reached live leaf state");
+    refreshFeedback(context, source);
     expectPath(policy, context, PathId(0), "Remote congestion did not change the selected path");
     feedback(source, 1, 0, 2);
+    refreshFeedback(context, source);
     expectPath(policy, context, PathId(0), "Score did not use max(local, remote)");
     // A third leaf reporting the same uplink must not affect destination 1.
     feedback(source, 2, 0, 7);
+    refreshFeedback(context, source);
     expectPath(policy, context, PathId(0), "Selection read the wrong destination's table");
 
     context.now = timeFromUs(100) - 1;
+    refreshFeedback(context, source);
     expectPath(policy, context, PathId(0), "Remote feedback expired before its boundary");
     context.now = timeFromUs(100);
+    refreshFeedback(context, source);
     expectPath(policy, context, PathId(101), "Expired feedback did not revert to local-only scoring");
     require(!source.toLeaf(1, 2, context.now).valid, "Expiry test did not exercise stale state");
 
@@ -120,6 +138,7 @@ void testLocalRemoteAndStale()
     auto owned = policy.selectRoute(context);
     owned.forward.clear();
     owned.reverse.clear();
+    refreshFeedback(context, source);
     expectPath(policy, context, PathId(101), "Consuming a returned route damaged cached paths");
 
     // One policy can select among a different number of candidates on its next call.
@@ -193,32 +212,24 @@ void rejects(Action action, const char *message)
 
 void testInvalidContext()
 {
-    LeafSwitch source(0, 2, 2), wrongSource(1, 2, 2);
+    LeafSwitch source(0, 2, 2);
     const std::vector<RoutePath> paths{{PathId(101), {}, {}}, {PathId(9001), {}, {}}};
     RouteContext context(paths);
     configure(context, source);
     context.congestion[PathId(101)] = CandidateCongestion{0, 0};
     context.congestion[PathId(9001)] = CandidateCongestion{1, 0};
     CongaLoadBalancer policy(42);
-    context.sourceLeafState = nullptr;
-    rejects([&] { policy.selectRoute(context); }, "Missing source state was accepted");
-    context.sourceLeafState = &wrongSource;
-    rejects([&] { policy.selectRoute(context); }, "Wrong source leaf was accepted");
-    context.sourceLeafState = &source;
     context.congestion.erase(PathId(101));
     rejects([&] { policy.selectRoute(context); }, "Missing candidate metadata was accepted");
     context.congestion[PathId(101)] = CandidateCongestion{0, 8};
     rejects([&] { policy.selectRoute(context); }, "Non-three-bit local metric was accepted");
     context.congestion[PathId(101)] = CandidateCongestion{16, 0};
     rejects([&] { policy.selectRoute(context); }, "Non-four-bit uplink tag was accepted");
-    context.congestion[PathId(101)] = CandidateCongestion{2, 0};
-    rejects([&] { policy.selectRoute(context); }, "Out-of-range source table column was accepted");
+    context.congestion[PathId(101)] = CandidateCongestion{0, 0, 8, true};
+    rejects([&] { policy.selectRoute(context); }, "Non-three-bit remote metric was accepted");
     context.congestion[PathId(101)] = CandidateCongestion{1, 0};
     rejects([&] { policy.selectRoute(context); }, "Duplicate source uplinks were accepted");
     context.congestion[PathId(101)] = CandidateCongestion{0, 0};
-    context.dstLeaf = 2;
-    rejects([&] { policy.selectRoute(context); }, "Out-of-range destination was accepted");
-    context.dstLeaf = 1;
     const std::vector<RoutePath> duplicates{paths[0], paths[0]};
     RouteContext duplicate(duplicates);
     configure(duplicate, source);
@@ -255,8 +266,13 @@ void testDecisionDiagnostics(const std::string &prefix)
     {
         ExperimentStats stats(prefix);
         auto record = [&] {
+            refreshFeedback(context, source);
             const auto route = policy.selectRoute(context);
-            stats.recordDecision("conga", context, route);
+            const RouteDecision decision("conga", context, route);
+            const auto saved = context.congestion;
+            context.congestion.clear(); // Recording cannot depend on the routing context.
+            stats.recordDecision(decision);
+            context.congestion = saved;
             ++context.flowId;
         };
         record(); // Unknown path 800: score 1 wins over path 20's local score 3.
@@ -331,6 +347,7 @@ void testFeedbackChangesFutureFlow()
     require(sourceLeaf.toLeaf(1, 0, now).valid && sourceLeaf.toLeaf(1, 0, now).metric == 6,
             "Measured path congestion did not reach the source table");
     context.now = now;
+    refreshFeedback(context, sourceLeaf);
     ++context.flowId;
     expectPath(policy, context, PathId(103), "Returned congestion did not redirect a later flow");
     require(installed.forward == installedForward && installed.reverse == installedReverse,
@@ -347,6 +364,69 @@ void testFeedbackChangesFutureFlow()
             "The original flow did not complete its second packet/ACK round trip");
 }
 
+void testMetricsFreeRecording(const std::string &prefix)
+{
+    const std::vector<RoutePath> paths{{PathId(77), {}, {}}};
+    RouteContext context(paths);
+    context.flowId = 44;
+    context.usesFabric = true;
+    EcmpLoadBalancer policy(42);
+    auto path = policy.selectRoute(context);
+    require(!path.metrics.available, "ECMP unexpectedly required congestion snapshots");
+    const RouteDecision decision("ecmp", context, path);
+    context.srcHost = 999; // Subsequent context changes must not alter the record.
+    ExperimentStats stats(prefix);
+    stats.recordDecision(decision);
+    FlowGenerator generator(DataSource::DCTCP, route_gen_t{}, 1000000000ULL,
+                            10000, Workloads::UNIFORM);
+    stats.write(generator, 0);
+    std::ifstream decisions(prefix + ".decisions.csv");
+    std::string line;
+    std::getline(decisions, line);
+    require(bool(std::getline(decisions, line)) && line == "44,0,ecmp,0,0,0,0,1,77,,,,,",
+            "Recording required congestion state or reread changed routing data");
+}
+
+void testGeneratorOwnedIdentity(const std::string &prefix)
+{
+    Queue dataQueue(1000000000ULL, 1000000, nullptr);
+    Queue ackQueue(1000000000ULL, 1000000, nullptr);
+    ExperimentStats stats(prefix);
+    stats.recordRoute(999, 0, 1, -1); // Existing observation history cannot allocate IDs.
+    std::vector<uint64_t> ids;
+    route_gen_t generate = [&](uint64_t flowId, route_t *&fwd, route_t *&rev,
+                               uint32_t &src, uint32_t &dst) {
+        ids.push_back(flowId);
+        src = 0;
+        dst = 1;
+        fwd = new route_t{&dataQueue};
+        rev = new route_t{&ackQueue};
+        // Sample observations: omitted records must not change future identities.
+        if (flowId % 2) stats.recordRoute(flowId, src, dst, -1);
+    };
+    FlowGenerator generator(DataSource::DCTCP, generate, 1000000000ULL,
+                            10000, Workloads::UNIFORM);
+    const auto now = EventList::Get().now();
+    EventList::Get().setEndtime(now + timeFromUs(2000));
+    generator.setTimeLimits(now + 1, now + timeFromUs(2000));
+    while (EventList::Get().doNextEvent()) {}
+    require(ids.size() > 3 && generator.generatedFlows() == ids.size(),
+            "Identity regression did not generate enough flows");
+    for (size_t i = 0; i < ids.size(); ++i) {
+        require(ids[i] == i, "Recording history influenced flow identity");
+    }
+    stats.write(generator, EventList::Get().now());
+    std::ifstream routes(prefix + ".routes.csv");
+    std::string line;
+    std::getline(routes, line);
+    require(bool(std::getline(routes, line)) && line == "999,0,1,-1",
+            "Route recording replaced supplied identity with a row index");
+    for (size_t i = 1; i < ids.size(); i += 2) {
+        require(bool(std::getline(routes, line)) && line == std::to_string(i) + ",0,1,-1",
+                "Sampled route observations lost generator-assigned flow IDs");
+    }
+}
+
 int main(int argc, char **argv)
 {
     require(argc == 2, "Pass an artifact prefix for diagnostic CSV verification");
@@ -355,5 +435,7 @@ int main(int argc, char **argv)
     testInvalidContext();
     testDecisionDiagnostics(argv[1]);
     testFeedbackChangesFutureFlow();
+    testMetricsFreeRecording(std::string(argv[1]) + "-ecmp");
+    testGeneratorOwnedIdentity(std::string(argv[1]) + "-identity");
     std::cout << "CONGA scoring, unknown/stale policy, path mapping, tie-breaking, validation, and TCP feedback adaptation passed\n";
 }

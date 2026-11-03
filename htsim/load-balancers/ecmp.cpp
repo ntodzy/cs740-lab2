@@ -30,6 +30,12 @@ EcmpLoadBalancer::selectRoute(const RouteContext &context)
         const size_t selectedPath = mix(mix(endpoints) ^ mix(context.flowId) ^ mix(_routingSeed))
             % context.paths.size();
         const RoutePath &path = context.paths.at(selectedPath);
+        // Congestion is optional for ECMP. Carry supplied observations for
+        // reporting without making them a prerequisite for selecting a path.
+        const auto measurement = context.congestion.find(path.pathId);
+        if (measurement != context.congestion.end()) {
+            route.metrics = measurement->second.measurements();
+        }
         route.pathId = path.pathId; // An opaque ID, not a core or candidate index.
 
         // Install the selected path for all data packets and reverse ACKs

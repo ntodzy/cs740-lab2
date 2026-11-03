@@ -17,8 +17,8 @@
 #include <deque>
 #include <functional>
 
-/* Route generator function. */
-typedef std::function<void(route_t *&, route_t *&, uint32_t &, uint32_t &)> route_gen_t;
+// First argument is the generator-owned flow sequence, independent of recording.
+typedef std::function<void(uint64_t, route_t *&, route_t *&, uint32_t &, uint32_t &)> route_gen_t;
 
 class FlowGenerator : public EventSource
 {
@@ -64,7 +64,7 @@ class FlowGenerator : public EventSource
         route_gen_t _routeGen;        // Function to generate a route.
         linkspeed_bps _flowRate;      // Target flow rate in bytes/sec.
         uint32_t _flowSizeDist;       // Distribution of flow size [0/1/2] - Uniform/Exp/Pareto.
-        uint32_t _flowsGenerated;     // Total number of flow generated.
+        uint64_t _flowsGenerated;     // Generator-owned sequence, independent of recording.
         simtime_picosec _endTime;     // When to stop generating flows and dump live ones.
         Workloads _workload;          // Type of workload and characteristics.
 

@@ -1,8 +1,6 @@
 #include "conga.h"
-#include "../leaf-switches/leafswitch.h"
 
 #include <stdexcept>
-#include <algorithm>
 #include <set>
 
 RoutePath
@@ -10,10 +8,6 @@ CongaLoadBalancer::selectRoute(const RouteContext &context)
 {
     if (context.usesFabric && context.paths.empty()) {
         throw std::invalid_argument("Fabric routing requires at least one available path");
-    }
-    if (context.usesFabric && (context.sourceLeafState == nullptr ||
-        context.sourceLeafState->leafId() != context.srcLeaf)) {
-        throw std::invalid_argument("CONGA requires matching source leaf state");
     }
     RoutePath route{};
     route.pathId = context.directPathId;
@@ -50,20 +44,14 @@ CongaLoadBalancer::selectRoute(const RouteContext &context)
                 !seenUplinks.insert(measurement.sourceUplink).second) {
                 throw std::invalid_argument("CONGA candidates require unique path IDs and source uplinks");
             }
-            if (measurement.sourceUplink >= 16 || measurement.localMetric >= 8) {
+            if (measurement.sourceUplink >= 16 || measurement.localMetric >= 8 ||
+                measurement.remoteMetric >= 8) {
                 throw std::invalid_argument("CONGA uplinks require 4-bit tags and 3-bit metrics");
-            }
-            LeafSwitch::Entry remote;
-            try {
-                remote = context.sourceLeafState->toLeaf(context.dstLeaf,
-                    measurement.sourceUplink, context.now);
-            } catch (const std::out_of_range &) {
-                throw std::invalid_argument("CONGA destination or source uplink is outside the leaf table");
             }
             // Unknown/stale remote state contributes zero: local measurement
             // still applies, and unobserved paths remain eligible for exploration.
-            const uint32_t metric = std::max(measurement.localMetric,
-                                            remote.valid ? remote.metric : 0);
+            const SelectionMetrics metrics = measurement.measurements();
+            const uint32_t metric = metrics.score;
             // Stable per-flow rank spreads ties without consuming traffic RNGs.
             // Rank by PathId, so reordering the candidate list cannot change ties.
             const uint64_t rank = mix(flowHash ^ mix(candidate.pathId.value));
@@ -71,6 +59,7 @@ CongaLoadBalancer::selectRoute(const RouteContext &context)
                 (metric == bestMetric && (rank < bestRank ||
                  (rank == bestRank && candidate.pathId < selected->pathId)))) {
                 selected = &candidate;
+                route.metrics = metrics;
                 bestMetric = metric;
                 bestRank = rank;
             }

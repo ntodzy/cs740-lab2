@@ -10,6 +10,17 @@
 
 #include <list>
 
+class Queue;
+
+// Packet processing at transmission completion, independent of statistics.
+class QueueServiceHook
+{
+public:
+    virtual ~QueueServiceHook() = default;
+    // The queue retains packet ownership: hooks must not free or forward it.
+    virtual void onPacketService(Queue &queue, Packet &packet) = 0;
+};
+
 class Queue : public EventSource, public PacketSink
 {
     public:
@@ -19,6 +30,8 @@ class Queue : public EventSource, public PacketSink
         virtual void printStats();
         QueueLogger *logger() const { return _logger; }
         void setLogger(QueueLogger *logger) { _logger = logger; }
+        QueueServiceHook *serviceHook() const { return _serviceHook; }
+        void setServiceHook(QueueServiceHook *hook) { _serviceHook = hook; }
 
         inline simtime_picosec drainTime(Packet *pkt) {
             return (simtime_picosec)(pkt->size()) * _ps_per_byte;
@@ -42,6 +55,8 @@ class Queue : public EventSource, public PacketSink
         mem_b _queuesize; // Current queue size.
 
     protected:
+        // All disciplines call this once per transmitted packet, before sendOn().
+        void notifyService(Packet &packet);
         // Start serving the item at the head of the queue.
         virtual void beginService();
 
@@ -57,6 +72,7 @@ class Queue : public EventSource, public PacketSink
 
         // Housekeeping
         QueueLogger *_logger;
+        QueueServiceHook *_serviceHook = nullptr; // Non-owning, independent of logger.
 };
 
 #endif /* QUEUE_H */

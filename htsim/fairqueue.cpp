@@ -50,9 +50,7 @@ FairQueue::completeService()
 
     // Logging and cleanup.
     _currentPkt->flow().logTraffic(*_currentPkt, *this, TrafficLogger::PKT_DEPART);
-    if (_logger) {
-        _logger->logQueue(*this, QueueLogger::PKT_SERVICE, *_currentPkt);
-    }
+    notifyService(*_currentPkt);
 
     if (TRACE_PKT == _currentPkt->flow().id) {
         cout << str() << " Pkt depart " << EventList::Get().now() << " " << _roundNumber << " "

@@ -76,6 +76,7 @@ void generateRandomRoute(LoadBalancer &loadBalancer,
                          const TopologyConfig &topology,
                          ExperimentStats &stats,
                          const std::string &mode,
+                         uint64_t flowId,
                          route_t *&fwd,
                          route_t *&rev,
                          uint32_t &src,
@@ -271,9 +272,9 @@ conga_testbed(const ArgList &args, Logfile &logfile)
     linkspeed_bps flowRate = llround(utilization * LEAF_SPEED * topology.nodes());
     // Capture ownership by value: the policy must survive this setup function.
     auto stats = runStats;
-    route_gen_t fnGenerateRoute = [loadBalancer, topology, stats, lb](route_t *&fwd, route_t *&rev,
+    route_gen_t fnGenerateRoute = [loadBalancer, topology, stats, lb](uint64_t flowId, route_t *&fwd, route_t *&rev,
                                                uint32_t &src, uint32_t &dst) {
-        conga::generateRandomRoute(*loadBalancer, topology, *stats, lb, fwd, rev, src, dst);
+        conga::generateRandomRoute(*loadBalancer, topology, *stats, lb, flowId, fwd, rev, src, dst);
     };
     FlowGenerator *flowGenerator = new FlowGenerator(endpoint,
                                                       fnGenerateRoute,
@@ -334,6 +335,7 @@ conga::generateRandomRoute(LoadBalancer &loadBalancer,
                            const TopologyConfig &topology,
                            ExperimentStats &stats,
                            const std::string &mode,
+                           uint64_t flowId,
                            route_t *&fwd,
                            route_t *&rev,
                            uint32_t &src,
@@ -356,30 +358,31 @@ conga::generateRandomRoute(LoadBalancer &loadBalancer,
     context.dstHost = dst;
     context.srcLeaf = srcLeaf;
     context.dstLeaf = dstLeaf;
-    context.sourceLeafState = leafSwitches[srcLeaf];
-    context.flowId = stats.nextFlowId();
+    context.flowId = flowId;
     context.now = EventList::Get().now();
     context.usesFabric = srcLeaf != dstLeaf;
     context.forward.access = {qServerLeaf[srcLeaf][srcServer], pServerLeaf[srcLeaf][srcServer]};
     context.forward.delivery = {qLeafServer[dstLeaf][dstServer], pLeafServer[dstLeaf][dstServer]};
     context.reverse.access = {qServerLeaf[dstLeaf][dstServer], pServerLeaf[dstLeaf][dstServer]};
     context.reverse.delivery = {qLeafServer[srcLeaf][srcServer], pLeafServer[srcLeaf][srcServer]};
-    // Snapshot every eligible local uplink at one simulation timestamp in both
-    // modes. Path IDs identify candidates; uplink tags identify leaf-table cells.
+    // Snapshot local and fresh remote state at one timestamp in both modes.
+    // Path IDs identify candidates; uplink tags identify leaf-table cells.
     for (const auto &candidate : context.paths) {
         const uint32_t uplink = sourceUplinkForPath.at(candidate.pathId);
+        const auto remote = leafSwitches[srcLeaf]->toLeaf(dstLeaf, uplink, context.now);
         context.congestion.emplace(candidate.pathId, CandidateCongestion{
-            uplink, wLeafCore[srcLeaf][uplink]->congestionMetric(context.now)});
+            uplink, wLeafCore[srcLeaf][uplink]->congestionMetric(context.now),
+            remote.metric, remote.valid});
     }
     RoutePath path = loadBalancer.selectRoute(context);
-    // Recording reads the same decision-time snapshots, outside policy code.
-    stats.recordDecision(mode, context, path);
+    // Statistics consumes an immutable record; it cannot query live tables or rescore.
+    stats.recordDecision(RouteDecision(mode, context, path));
     fwd = new route_t(std::move(path.forward));
     rev = new route_t(std::move(path.reverse));
     // Preserve the existing core-based CSV schema at the topology boundary.
     const int selectedCore = context.usesFabric
         ? static_cast<int>(coreForPath.at(path.pathId)) : -1;
-    stats.recordRoute(src, dst, selectedCore);
+    stats.recordRoute(flowId, src, dst, selectedCore);
 }
 
 void

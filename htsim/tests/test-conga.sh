@@ -11,4 +11,5 @@ for source in *.cpp load-balancers/*.cpp congestion/*.cpp packets/*.cpp stats/*.
 done
 "${CXX:-clang++}" -std=c++11 -Wall -Wextra -g tests/test-conga.cpp \
     "${objects[@]}" -o "$test_dir/test-conga"
-"$test_dir/test-conga" "$test_dir/controlled-decisions"
+"$test_dir/test-conga" "$test_dir/controlled-decisions" > "$test_dir/test.stdout"
+tail -n 1 "$test_dir/test.stdout"

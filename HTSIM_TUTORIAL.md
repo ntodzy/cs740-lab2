@@ -150,7 +150,12 @@ owns its path selection and route assembly. The testbed generates endpoints and
 prebuilds candidate `RoutePath` objects with opaque IDs and variable-length
 forward/reverse hop lists, including tagging/feedback hooks. Its
 `buildFabricPath()` retains the detailed per-hop comments. `RouteContext`
-references the cached candidates and supplies access/delivery hops;
+references the cached candidates and supplies access/delivery hops plus value
+snapshots of local and fresh remote congestion at one decision timestamp.
+It contains no `LeafSwitch` pointer; the policies never read live tables.
+Flow IDs are assigned by `FlowGenerator` and supplied to its route callback,
+independently of which flows statistics records. An immutable `RouteDecision`
+carries captured selection metrics to statistics without table reads or rescoring;
 the balancer returns a complete `RoutePath` containing its ID and both execution
 routes. The caller moves the returned vectors into the installed routes.
 Same-leaf traffic returns a direct path through this same interface; there is
@@ -169,7 +174,7 @@ which parts of the header are meaningful.
 
 The DRE now follows the paper's periodic rule: each transmitted packet adds
 its size to X, and each Tdre tick multiplies X by `(1-alpha)`. It uses the
-existing queue-service notification, so dropped and still-queued packets do
+explicit queue-service hook, independent of the logger, so dropped and still-queued packets do
 not contribute. CE is accumulated at departure, before forwarding, while
 source metadata initialization remains at ingress.
 

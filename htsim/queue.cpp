@@ -25,6 +25,12 @@ Queue::beginService()
     EventList::Get().sourceIsPendingRel(*this, drainTime(_enqueued.back()));
 }
 
+void Queue::notifyService(Packet &packet)
+{
+    if (_serviceHook) _serviceHook->onPacketService(*this, packet);
+    if (_logger) _logger->logQueue(*this, QueueLogger::PKT_SERVICE, packet);
+}
+
 void
 Queue::completeService()
 {
@@ -36,9 +42,7 @@ Queue::completeService()
 
     pkt->flow().logTraffic(*pkt, *this, TrafficLogger::PKT_DEPART);
 
-    if (_logger) {
-        _logger->logQueue(*this, QueueLogger::PKT_SERVICE, *pkt);
-    }
+    notifyService(*pkt);
 
     applyEcnMark(*pkt);
     pkt->sendOn();

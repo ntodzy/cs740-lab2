@@ -6,7 +6,7 @@
 
 // Non-owning decorator: the queue must outlive this wrapper and all events.
 // Put the wrapper, not the wrapped queue, into each monitored route hop.
-class DreQueueWrapper : public PacketSink, public QueueLogger
+class DreQueueWrapper : public PacketSink, public QueueServiceHook
 {
 public:
     DreQueueWrapper(Queue &queue, linkspeed_bps rate,
@@ -16,7 +16,7 @@ public:
     DreQueueWrapper(const DreQueueWrapper &) = delete;
     DreQueueWrapper &operator=(const DreQueueWrapper &) = delete;
     void receivePacket(Packet &packet) override;
-    void logQueue(Queue &queue, QueueEvent event, Packet &packet) override;
+    void onPacketService(Queue &queue, Packet &packet) override;
     uint32_t congestionMetric(simtime_picosec now) { return _dre.metric(now); }
     uint32_t congestionMetric() { return congestionMetric(EventList::Get().now()); }
     double normalizedLoad(simtime_picosec now) { return _dre.normalizedLoad(now); }
@@ -26,7 +26,6 @@ private:
     Queue &_queue;
     DreTracker _dre;
     int _sourceUplink;
-    QueueLogger *_downstreamLogger;
 };
 
 #endif // DRE_QUEUE_WRAPPER_H

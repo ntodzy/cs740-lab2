@@ -144,13 +144,15 @@ as `-1` there. Same-leaf traffic returns a direct `RoutePath` through the same
 interface, using the topology's `directPathId`. The topology supplies
 `usesFabric` in the input context; it is not part of the returned path.
 
-The testbed sets `RouteContext::sourceLeafState` to a non-owning
-`const LeafSwitch*` for the source leaf. The context also carries a decision
-timestamp and `congestion[PathId]` entries containing the candidate's source
-uplink and its local DRE metric sampled at that timestamp. CONGA reads
-expiry-aware `ToLeaf[dstLeaf][sourceUplink]` snapshots from that source leaf.
-It never uses the opaque path ID as a congestion-table index. The leaf lives
-for the simulation lifetime; ECMP ignores congestion state.
+`FlowGenerator` assigns the flow sequence ID and passes it into the route
+callback; statistics never allocates IDs, so sampling or disabling records
+cannot change routing identity. The testbed snapshots local DRE and
+expiry-aware To-Leaf state into `congestion[PathId]` at one decision timestamp.
+Each value contains the source uplink, local metric, remote metric, and remote
+validity. `RouteContext` exposes no leaf object or live congestion tables.
+CONGA uses these values without knowing table storage or simulator objects;
+ECMP can select a route without any congestion data. Returned paths carry
+captured `SelectionMetrics` for observation.
 
 `EcmpLoadBalancer` in `load-balancers/ecmp.*` and `CongaLoadBalancer` in
 `load-balancers/conga.*` retain separate execution paths. CONGA minimizes
@@ -222,8 +224,10 @@ departed bytes × 8 divided by link rate × elapsed simulation time; generated
 flows include those scheduled to start after the cutoff due to start jitter.
 CSV output adds aggregate counters without periodic queue sampling.
 Decision metrics are decision-time observations, not the final link snapshot
-in `.links.csv`. Statistics are recorded by the testbed after `selectRoute()`;
-the load balancer performs no file I/O. Selection counts include direct routes,
+in `.links.csv`. After `selectRoute()`, the testbed creates an immutable
+`RouteDecision` from the returned path's captured metrics and passes it to
+statistics. The recorder never reads tables or recomputes scores; the load
+balancer performs no file I/O. Unavailable metrics are blank. Selection counts include direct routes,
 which are not counted as missing remote feedback.
 
 Run `bash htsim/tests/test-conga.sh` for controlled selection tests: local and
@@ -236,9 +240,10 @@ Every directional fabric link also has a `DreQueueWrapper` around its existing
 queue. This preserves FIFO/FQ/AFQ/PQ/SFQ behavior. Its independent DRE measures
 transmitted bytes at queue service completion; packets dropped or still queued
 do not increment X. The source-leaf wrapper sets `LBTag` and clears `CE` on
-ingress. Each wrapper intercepts the existing queue-service notification to
-increment X and accumulate the maximum metric in CE before forwarding; it
-also delegates logging to the original statistics logger. Data and ACK
+ingress. Each queue discipline calls `Queue::notifyService()` at departure.
+It invokes an explicit `QueueServiceHook` to increment X and accumulate CE,
+then independently notifies the current statistics logger. Replacing or
+disabling logging cannot disable DRE/CE processing. Data and ACK
 traversals are measured independently. Experiment 2 now installs a `LeafSwitch`
 at each leaf to collect observations and exchange table-selected feedback on
 both data and ACK packets. ECMP ignores the measurements when choosing paths;

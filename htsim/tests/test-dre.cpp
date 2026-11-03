@@ -142,7 +142,8 @@ Result runQueue(unsigned int type, bool wrapped)
         check(first.hasCongaMetadata() && second.hasCongaMetadata(), "Ingress must initialize metadata");
         check(sink.tags[0] == 3 && sink.tags[1] == 3, "Wrong uplink tag");
         wrapper.reset();
-        check(queue->logger() == &counter, "Wrapper must restore the original logger");
+        check(queue->logger() == &counter, "Wrapper must leave the logger unchanged");
+        check(queue->serviceHook() == nullptr, "Wrapper must detach its service hook");
     }
     return Result{EventList::Get().now() - start, sink.ids};
 }
@@ -173,6 +174,41 @@ void testPathAndDrop()
     check(dropped.freed && dropping.sentBytes() == 0,
           "Dropped arrivals must not count as transmitted load");
     check(!dropped.hasCongaMetadata(), "Downstream wrappers must not invent metadata");
+}
+
+void testLoggingIndependence()
+{
+    for (unsigned int type = 0; type < 5; ++type) {
+        Counter original, replacement;
+        auto queue = makeQueue(type, &original);
+        Sink sink;
+        PacketFlow flow(nullptr);
+        flow.setCongaLeafIds(0, 1);
+        {
+            DreQueueWrapper wrapper(*queue, 10000000000ULL, timeFromUs(1), 0.5, 3);
+            route_t route{&wrapper, &sink};
+            TestPacket first(flow, route, 1500, 1);
+            first.sendOn();
+            queue->setLogger(&replacement); // Replace observation while service is pending.
+            while (EventList::Get().doNextEvent()) {}
+            check(wrapper.sentBytes() == 1500 && sink.ce.back() == 4,
+                  "Replacing the logger disabled DRE/CE packet processing");
+            check(original.enqueued == 1 && original.serviced == 0 && replacement.serviced == 1,
+                  "Queue logger replacement did not preserve notification ownership");
+            queue->setLogger(nullptr);
+            TestPacket second(flow, route, 1500, 2);
+            second.sendOn();
+            while (EventList::Get().doNextEvent()) {}
+            check(wrapper.sentBytes() == 3000 && sink.ce.back() >= 4,
+                  "Disabling statistics disabled congestion measurement");
+            bool rejected = false;
+            try { DreQueueWrapper duplicate(*queue, 10000000000ULL); }
+            catch (const std::invalid_argument &) { rejected = true; }
+            check(rejected, "A second wrapper silently replaced the active service hook");
+        }
+        check(queue->logger() == nullptr && queue->serviceHook() == nullptr,
+              "Destroying the wrapper changed logging or left a dangling hook");
+    }
 }
 
 void testPools()
@@ -238,6 +274,7 @@ void testPools()
 
 int main()
 {
+    testLoggingIndependence();
     testTracker();
     for (unsigned int type = 0; type < 5; ++type) {
         auto baseline = runQueue(type, false);

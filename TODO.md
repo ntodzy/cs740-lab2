@@ -60,7 +60,7 @@ Verified by `bash htsim/tests/test-routing-randomness.sh` and
 - [x] Implement `congestion/DreTracker` and a queue-discipline-independent `DreQueueWrapper` using `EventList::Get().now()`.
 - [x] Apply the paper's periodic `X *= (1-alpha)` at Tdre boundaries; add transmitted bytes, normalize with `tau = Tdre/alpha`, and quantize to 3 bits. Exclude dropped/still-queued bytes.
 - [x] Expose `congestionMetric()` on each fabric wrapper for later local-uplink comparisons; reads account for idle time.
-- [x] Update packet `CE` with `max(old_ce, link_metric)` on monitored fabric-link departures via the existing queue-service notifications.
+- [x] Update packet `CE` with `max(old_ce, link_metric)` on monitored fabric-link departures via an explicit queue-service hook independent of logging.
 - [x] Add deterministic tests for exact periodic ticks, no inter-tick decay, skipped ticks, steady-state load, saturation, quantization, unchanged queue behavior, excluded drops, and packet reuse (`bash htsim/tests/test-dre.sh`).
 
 **Done when:** `CE` is monotonic along a path and the metric rises under load and decays while idle.
@@ -87,6 +87,7 @@ when selecting later flows, while ECMP retains its independent hash policy.
 - [x] Split ECMP and CONGA route construction into each balancer's `selectRoute()` implementation; preserve existing tagging hooks and detailed topology comments.
 - [x] Return a complete `RoutePath` with an opaque ID and owned forward/reverse hop vectors, including direct same-leaf paths; keep core mapping, detailed hop comments, and tagging-hook wiring in the topology. Test non-index IDs (including zero), different forward/reverse hop counts, and independent ownership of returned vectors.
 - [x] Keep selection entirely in each policy's `selectRoute(context)`, derive path counts from the context, and use a distinct `PathId` type. Test varying candidate counts on one policy instance.
+- [x] Allocate flow IDs in `FlowGenerator`, pass timestamped local/remote snapshots without leaf-object dependencies, and send immutable decision records to statistics without table reads or rescoring. Test sampled recording, snapshot isolation, and replacing/disabling queue logging.
 - [x] For every eligible uplink compute `max(local[u], ToLeaf[destination][u])`, using explicit path-to-uplink mappings and a shared decision timestamp. Unknown/expired remote metrics contribute zero.
 - [x] Choose the minimum using stable seeded hash ranks over endpoint/flow/path identities, with path ID breaking hash collisions; do not alter the traffic RNG stream.
 - [x] Invoke selection once in the route callback at flow creation, treating the full flow as one flowlet and retaining its forward/reverse routes.

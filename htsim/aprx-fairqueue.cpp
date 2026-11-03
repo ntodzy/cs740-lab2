@@ -57,9 +57,7 @@ AprxFairQueue::completeService()
     _nPackets -= 1;
 
     pkt->flow().logTraffic(*pkt, *this, TrafficLogger::PKT_DEPART);
-    if (_logger) {
-        _logger->logQueue(*this, QueueLogger::PKT_SERVICE, *pkt);
-    }
+    notifyService(*pkt);
 
     uint64_t bytes = ULLONG_MAX;
     for (unsigned int i = 0; i < _cfg.nHash; i++) {
