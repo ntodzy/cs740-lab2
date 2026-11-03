@@ -15,7 +15,7 @@ This checklist orders work by dependency. Keep ECMP and CONGA on the same topolo
 
 - [x] Run `make -C htsim` and preserve warning-free behavior for new code.
 - [x] Smoke-test experiments 1 and 3 with short durations.
-- [x] Add an `--lb=ecmp|conga` argument to experiment 2 (CONGA currently reports not implemented).
+- [x] Add an `--lb=ecmp|conga` argument to experiment 2 (CONGA now runs an independent scaffold with copied ECMP selection and tagging).
 - [x] Separate experiment 2 traffic randomness (`--rngseed`) from routing/tie-break randomness (`--routingseed`); load balancers own an independent engine.
 - [x] Add `--small=1` for fast debugging: 2 cores, 2 leaves, and 2 servers per leaf.
 
@@ -67,17 +67,26 @@ Verified by `bash htsim/tests/test-routing-randomness.sh` and
 
 ## 6. Implement leaf state and feedback
 
-- [ ] Add `leafswitch.h/.cpp` with `PacketSink` behavior and leaf ID.
-- [ ] Allocate `ToLeaf[destination][uplink]` and `FromLeaf[source][uplink]` tables.
-- [ ] On forward arrival, record `(source leaf, LBTag, CE)` in the destination's From-Leaf table.
-- [ ] On reverse traffic, select and stamp a valid feedback entry.
-- [ ] At the original source leaf, update the matching To-Leaf cell.
-- [ ] Implement and document feedback priority/round-robin and stale-entry policy.
+- [x] Add `leaf-switches/leafswitch.h/.cpp` with leaf ID, incoming `PacketSink`, and outgoing `egress()` hook; install both in experiment 2's cross-leaf routes.
+- [x] Preallocate `ToLeaf[destination][uplink]` and `FromLeaf[source][uplink]` tables with validity, metric, timestamp, and pending-change status.
+- [x] On fabric arrival, record `(source leaf, LBTag, CE)` in the destination's From-Leaf table (data and ACKs).
+- [x] On outgoing traffic, stamp fresh feedback from `FromLeaf[destination]`, replacing the endpoint echo or clearing feedback if none is available.
+- [x] At the original source leaf, update the matching `ToLeaf[remote leaf][feedbackLbTag]` cell independently of the return packet's own uplink.
+- [x] Prioritize new/changed entries, then refresh unchanged entries; use per-peer round-robin and invalidate both tables after 10 ms without received updates. Document this lab policy in `README.md`.
 
 **Done when:** a controlled packet from leaf A through uplink `u` updates exactly `B.FromLeaf[A][u]`, then feedback updates exactly `A.ToLeaf[B][u]`.
 
+Verified by `bash htsim/tests/test-leaf-feedback.sh`: actual TCP ACK round trip,
+different forward/return uplinks, exact cell isolation, data-carried feedback,
+changed-entry priority, round-robin refresh, invalid metadata, and expiry/reactivation.
+CONGA route selection remains step 7; both modes currently run leaf feedback on
+paths selected by the same ECMP hash.
+
 ## 7. Implement CONGA route selection
 
+- [x] Split ECMP and CONGA route construction into each balancer's `selectRoute()` implementation; copy current tagging, comments, and ECMP selection into the CONGA scaffold.
+- [x] Return a complete `RoutePath` with an opaque ID and owned forward/reverse hop vectors, including direct same-leaf paths; keep core mapping, detailed hop comments, and tagging-hook wiring in the topology. Test non-index IDs (including zero), different forward/reverse hop counts, and independent ownership of returned vectors.
+- [x] Keep selection entirely in each policy's `selectRoute(context)`, derive path counts from the context, and use a distinct `PathId` type. Test varying candidate counts on one policy instance.
 - [ ] For every eligible uplink compute `max(local[u], ToLeaf[destination][u])`.
 - [ ] Choose the minimum using deterministic tie-breaking that does not alter the traffic RNG stream.
 - [ ] Invoke selection once in the route callback, treating the full flow as one flowlet.

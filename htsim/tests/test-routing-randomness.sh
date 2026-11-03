@@ -7,22 +7,31 @@ printf 'Test artifacts: %s\n' "$test_dir"
 
 make
 "${CXX:-clang++}" -std=c++11 -Wall -Wextra tests/test-routing-randomness.cpp \
-    load-balancers/ecmp.cpp -o "$test_dir/check-rng"
+    load-balancers/ecmp.cpp load-balancers/conga.cpp -o "$test_dir/check-rng"
 "$test_dir/check-rng"
 
 for workload in uniform pareto enterprise datamining; do
-    for seed in 42 43; do
-        ./htsim --expt=2 --small=1 --duration=1 --utilization=0.0001 \
-            --flowsize=10000 --flowdist="$workload" --rngseed=12314 \
-            --routingseed="$seed" --logfile="$test_dir/$workload-$seed" \
-            > "$test_dir/$workload-$seed.out" 2> "$test_dir/$workload-$seed.err"
-        # Source records contain name, start time, ID, size, source, destination.
-        # Ignore IDs: they are simulator objects, not part of the traffic demand.
-        sed 's/^\.//' "$test_dir/$workload-$seed.out" |
-            awk '/^src[0-9]+ / { print $1, $2, $4, $5, $6 }' \
-            > "$test_dir/$workload-$seed.demands"
-        test -s "$test_dir/$workload-$seed.demands"
+    for mode in ecmp conga; do
+        for seed in 42 43; do
+            prefix="$test_dir/$workload-$mode-$seed"
+            ./htsim --expt=2 --lb="$mode" --small=1 --duration=1 --utilization=0.0001 \
+                --flowsize=10000 --flowdist="$workload" --rngseed=12314 \
+                --routingseed="$seed" --logfile="$prefix" \
+                > "$prefix.out" 2> "$prefix.err"
+            # Source records contain name, start time, ID, size, source, destination.
+            # Ignore IDs: they are simulator objects, not part of the traffic demand.
+            sed 's/^\.//' "$prefix.out" |
+                awk '/^src[0-9]+ / { print $1, $2, $4, $5, $6 }' \
+                > "$prefix.demands"
+            test -s "$prefix.demands"
+        done
+        cmp "$test_dir/$workload-$mode-42.demands" "$test_dir/$workload-$mode-43.demands"
     done
-    cmp "$test_dir/$workload-42.demands" "$test_dir/$workload-43.demands"
-    printf '%s: identical demands across routing seeds\n' "$workload"
+    for seed in 42 43; do
+        cmp "$test_dir/$workload-ecmp-$seed.demands" "$test_dir/$workload-conga-$seed.demands"
+        for csv in routes links summary; do
+            cmp "$test_dir/$workload-ecmp-$seed.$csv.csv" "$test_dir/$workload-conga-$seed.$csv.csv"
+        done
+    done
+    printf '%s: identical demands across routing seeds; CONGA scaffold matches ECMP statistics\n' "$workload"
 done

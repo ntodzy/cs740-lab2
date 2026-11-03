@@ -8,10 +8,14 @@
 #include "pipe.h"
 #include "test.h"
 #include "load-balancers/ecmp.h"
+#include "load-balancers/conga.h"
 #include "stats/experiment-stats.h"
 #include "congestion/dre-queue-wrapper.h"
+#include "leaf-switches/leafswitch.h"
 
 #include <memory>
+#include <map>
+#include <utility>
 
 namespace conga {
 
@@ -49,9 +53,16 @@ Queue *qCoreLeaf[N_CORE][N_LEAF] = {};
 Pipe  *pCoreLeaf[N_CORE][N_LEAF] = {};
 DreQueueWrapper *wLeafCore[N_LEAF][N_CORE] = {};
 DreQueueWrapper *wCoreLeaf[N_CORE][N_LEAF] = {};
+LeafSwitch *leafSwitches[N_LEAF] = {};
+// Candidate IDs have meaning only within this topology. Balancers never see
+// the core mapping; cached hop lists avoid rebuilding candidates for every flow.
+std::vector<RoutePath> fabricPaths[N_LEAF][N_LEAF];
+std::map<PathId, uint32_t> coreForPath;
 
 std::shared_ptr<ExperimentStats> runStats;
 FlowGenerator *runGenerator = NULL;
+
+RoutePath buildFabricPath(uint32_t srcLeaf, uint32_t dstLeaf, uint32_t core);
 
 void createQueue(const std::string &queueType,
                  Queue *&queue,
@@ -137,10 +148,10 @@ conga_testbed(const ArgList &args, Logfile &logfile)
 
     shared_ptr<LoadBalancer> loadBalancer;
     if (lb == "ecmp") {
-        loadBalancer = make_shared<EcmpLoadBalancer>(topology.cores, routingSeed);
+        loadBalancer = make_shared<EcmpLoadBalancer>(routingSeed);
     } else if (lb == "conga") {
-        cerr << "Load balancer 'conga' is not implemented yet\n";
-        exit(1);
+        loadBalancer = make_shared<CongaLoadBalancer>(routingSeed);
+        cerr << "CONGA scaffold: using ECMP selection; congestion-aware selection is pending\n";
     } else {
         cerr << "Unknown load balancer: " << lb << "; expected ecmp or conga\n";
         exit(1);
@@ -152,6 +163,7 @@ conga_testbed(const ArgList &args, Logfile &logfile)
 
     // Fully connect the active leaves and cores.
     for (uint32_t leaf = 0; leaf < topology.leaves; leaf++) {
+        leafSwitches[leaf] = new LeafSwitch(leaf, topology.leaves, topology.cores);
         for (uint32_t core = 0; core < topology.cores; core++) {
             createQueue(queueType, qLeafCore[leaf][core], CORE_SPEED, LEAF_BUFFER);
             wLeafCore[leaf][core] = new DreQueueWrapper(*qLeafCore[leaf][core],
@@ -197,6 +209,32 @@ conga_testbed(const ArgList &args, Logfile &logfile)
             nameObject(*pLeafServer[leaf][server],
                        "p-leaf-server-" + to_string(leaf) + "-" + to_string(server),
                        logfile);
+        }
+    }
+
+    // Translate opaque path IDs back to physical cores for CSV statistics.
+    // This topology uses the core number as its path ID; balancers do not
+    // depend on that convention and only return the selected candidate's ID.
+    coreForPath.clear();
+    for (uint32_t core = 0; core < topology.cores; ++core) {
+        coreForPath[PathId(core)] = core;
+    }
+
+    // Pre-compute all candidate paths between every pair of leaves.
+    // Cache these once during setup; each flow's balancer later selects a path.
+    for (uint32_t srcLeaf = 0; srcLeaf < topology.leaves; ++srcLeaf) {
+        for (uint32_t dstLeaf = 0; dstLeaf < topology.leaves; ++dstLeaf) {
+            auto &paths = fabricPaths[srcLeaf][dstLeaf]; // Cache for this ordered leaf pair.
+            paths.clear();
+            // Same-leaf hosts use access/delivery links only, so their fabric
+            // cache stays empty. Different leaves require one core in this topology.
+            if (srcLeaf != dstLeaf) {
+                for (uint32_t core = 0; core < topology.cores; ++core) {
+                    // One candidate per core, containing forward and reverse
+                    // fabric hops with their leaf tagging/feedback hooks.
+                    paths.push_back(buildFabricPath(srcLeaf, dstLeaf, core));
+                }
+            }
         }
     }
 
@@ -248,6 +286,45 @@ conga_testbed(const ArgList &args, Logfile &logfile)
     cerr << "Traffic seed: " << trafficSeed << ", routing seed: " << routingSeed << endl;
 }
 
+// This topology resolves a candidate into leaf/core queues, pipes, and hooks.
+// Other topologies can supply different hop counts without changing a balancer.
+RoutePath
+conga::buildFabricPath(uint32_t srcLeaf, uint32_t dstLeaf, uint32_t core)
+{
+    RoutePath path;
+    path.pathId = PathId(core);
+    route_t *fwd = &path.forward;
+    route_t *rev = &path.reverse;
+    // Describe this candidate path for all data packets and reverse ACKs
+    // in this flow (the lab treats a whole flow as one flowlet).
+    // push_back() builds the ordered route; it does not send a packet.
+    // Later, packet.sendOn() calls receivePacket() on the next route entry.
+    // Leaf hooks process metadata; the candidate's core is supplied by the topology.
+
+    // Forward data path: source leaf -> selected core -> destination leaf.
+
+    fwd->push_back(&leafSwitches[srcLeaf]->egress()); // Stamp feedback about traffic previously received from the destination.
+    fwd->push_back(wLeafCore[srcLeaf][core]); // Initialize LBTag/CE, enqueue on qLeafCore, then update DRE/CE at service.
+    fwd->push_back(pLeafCore[srcLeaf][core]); // Propagation delay from the source leaf to the selected core.
+    fwd->push_back(wCoreLeaf[core][dstLeaf]); // Enqueue on qCoreLeaf; update this link's DRE and accumulate CE at service.
+    fwd->push_back(pCoreLeaf[core][dstLeaf]); // Propagation delay from the core to the destination leaf
+    // Record the path observation in FromLeaf and apply any carried feedback
+    // to ToLeaf, then forward toward the destination host.
+    fwd->push_back(leafSwitches[dstLeaf]);
+
+
+    // Reverse ACK path: destination leaf -> same core -> original source leaf.
+    rev->push_back(&leafSwitches[dstLeaf]->egress()); // Stamp table-selected feedback about the forward data path.
+    rev->push_back(wLeafCore[dstLeaf][core]); // Start the ACK's own LBTag/CE measurement, preserving stamped feedback;
+    rev->push_back(pLeafCore[dstLeaf][core]); // enqueue on qLeafCore and update DRE/CE when the ACK is transmitted. Propagation delay from the destination leaf to the core.
+    rev->push_back(wCoreLeaf[core][srcLeaf]); // Enqueue toward the original source leaf and accumulate reverse-path CE.
+    rev->push_back(pCoreLeaf[core][srcLeaf]); // Propagation delay from the core to the original source leaf.
+    // Apply returned feedback to ToLeaf and record the ACK path in FromLeaf,
+    // then forward toward the original source host.
+    rev->push_back(leafSwitches[srcLeaf]);
+    return path;
+}
+
 void
 conga::generateRandomRoute(LoadBalancer &loadBalancer,
                            const TopologyConfig &topology,
@@ -267,40 +344,25 @@ conga::generateRandomRoute(LoadBalancer &loadBalancer,
     uint32_t srcServer = src % topology.serversPerLeaf;
     uint32_t dstServer = dst % topology.serversPerLeaf;
 
-    fwd = new route_t();
-    rev = new route_t();
-
-    fwd->push_back(qServerLeaf[srcLeaf][srcServer]);
-    fwd->push_back(pServerLeaf[srcLeaf][srcServer]);
-    rev->push_back(qServerLeaf[dstLeaf][dstServer]);
-    rev->push_back(pServerLeaf[dstLeaf][dstServer]);
-
-    // LOAD BALANCER: choose the source leaf's uplink (identified by core).
-    // Delegate policy to the selected implementation; routes stay shared.
-    // Same-leaf traffic needs no fabric uplink selection.
-    int selectedCore = -1; // Same-leaf traffic has no fabric hop.
-    if (srcLeaf != dstLeaf) {
-        uint32_t core = loadBalancer.chooseUplink(src, dst, stats.nextFlowId());
-        assert(core < topology.cores);
-        selectedCore = core;
-
-        // Install the selected path for all data packets and reverse ACKs
-        // in this flow (the lab treats a whole flow as one flowlet).
-        fwd->push_back(wLeafCore[srcLeaf][core]);
-        fwd->push_back(pLeafCore[srcLeaf][core]);
-        fwd->push_back(wCoreLeaf[core][dstLeaf]);
-        fwd->push_back(pCoreLeaf[core][dstLeaf]);
-
-        rev->push_back(wLeafCore[dstLeaf][core]);
-        rev->push_back(pLeafCore[dstLeaf][core]);
-        rev->push_back(wCoreLeaf[core][srcLeaf]);
-        rev->push_back(pCoreLeaf[core][srcLeaf]);
-    }
-
-    fwd->push_back(qLeafServer[dstLeaf][dstServer]);
-    fwd->push_back(pLeafServer[dstLeaf][dstServer]);
-    rev->push_back(qLeafServer[srcLeaf][srcServer]);
-    rev->push_back(pLeafServer[srcLeaf][srcServer]);
+    // Traffic generation stays shared. Policies receive opaque candidate paths;
+    // only this topology knows how each path maps onto physical switches.
+    RouteContext context(fabricPaths[srcLeaf][dstLeaf]);
+    context.srcHost = src;
+    context.dstHost = dst;
+    context.srcLeaf = srcLeaf;
+    context.dstLeaf = dstLeaf;
+    context.flowId = stats.nextFlowId();
+    context.usesFabric = srcLeaf != dstLeaf;
+    context.forward.access = {qServerLeaf[srcLeaf][srcServer], pServerLeaf[srcLeaf][srcServer]};
+    context.forward.delivery = {qLeafServer[dstLeaf][dstServer], pLeafServer[dstLeaf][dstServer]};
+    context.reverse.access = {qServerLeaf[dstLeaf][dstServer], pServerLeaf[dstLeaf][dstServer]};
+    context.reverse.delivery = {qLeafServer[srcLeaf][srcServer], pLeafServer[srcLeaf][srcServer]};
+    RoutePath path = loadBalancer.selectRoute(context);
+    fwd = new route_t(std::move(path.forward));
+    rev = new route_t(std::move(path.reverse));
+    // Preserve the existing core-based CSV schema at the topology boundary.
+    const int selectedCore = context.usesFabric
+        ? static_cast<int>(coreForPath.at(path.pathId)) : -1;
     stats.recordRoute(src, dst, selectedCore);
 }
 

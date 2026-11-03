@@ -3,16 +3,17 @@
 
 #include <cstdint>
 #include <random>
+#include "route-context.h"
 
-// Shared interface for uplink policies; route construction stays shared.
+// Each policy constructs the forward/reverse execution paths from available hops.
 class LoadBalancer
 {
 public:
     explicit LoadBalancer(uint32_t routingSeed)
         : _routingSeed(routingSeed), _routingRng(routingSeed) {}
     virtual ~LoadBalancer() = default;
-    virtual uint32_t chooseUplink(uint32_t srcHost, uint32_t dstHost,
-                                  uint64_t flowId) = 0;
+    // Return complete forward/reverse routes and their topology-defined path ID.
+    virtual RoutePath selectRoute(const RouteContext &context) = 0;
 
 protected:
     uint32_t _routingSeed;

@@ -106,7 +106,7 @@ The cleanest design is to keep policy at leaves and measurement at fabric queues
 | `LBTag`, `CE`, feedback tag/metric, validity | Base `Packet`, so data and ACK packets can carry it |
 | DRE-like link metric | Implemented in `congestion/DreTracker`, owned by a `DreQueueWrapper` around each directional fabric queue |
 | To-/From-Leaf tables | A `LeafSwitch` implementing `PacketSink` |
-| Uplink choice | `LeafSwitch::chooseUplink()`, called by the route generator |
+| Path choice | Each policy implements selection directly in `selectRoute(context)`; congestion-aware CONGA choice is pending |
 | ECMP/CONGA selection | Experiment argument such as `--lb=ecmp` or `--lb=conga` |
 
 A useful route shape is:
@@ -118,7 +118,7 @@ source host -> source leaf -> selected leaf/core queue+pipe
 
 Static route entries still model the chosen core; leaf objects update metadata as packets pass. A monitored fabric queue updates its simulation-time DRE and applies `CE = max(CE, link_metric)`. The destination leaf records the observation in `FromLeaf[source][LBTag]`. A reverse packet carries a valid feedback entry; the original source leaf updates `ToLeaf[destination][FB_LBTag]`.
 
-Currently, measurement and packet feedback transport are implemented: source-leaf wrappers
+Measurement, leaf tables, and packet feedback transport are implemented: source-leaf wrappers
 initialize `LBTag`/`CE`, and downstream wrappers accumulate CE. A wrapper
 replaces its queue in the route, then calls the wrapped queue's `receivePacket()`
 directly. The queue still schedules service and forwards to the next pipe.
@@ -126,8 +126,40 @@ Experiment 2 supplies leaf IDs through `PacketFlow`; ACK IDs are reversed.
 Transport sinks copy the arriving `LBTag`/`CE` observation into the ACK's
 feedback fields before releasing the data packet. Reverse source-uplink
 initialization starts the ACK's own measurement while preserving that feedback.
-This immediate echo is preparatory transport plumbing; leaf tables, feedback
-scheduling, aging, and CONGA decisions remain future work. Both data and ACK
+The ACK factory's immediate echo is a fallback; experiment 2's outgoing leaf
+hook replaces it with feedback from its shared `FromLeaf[destination]` table.
+`leaf-switches/leafswitch.*` provides an incoming `PacketSink` after the fabric
+pipe and an `egress()` hook before the source fabric wrapper. Incoming packets
+update `FromLeaf[source][LBTag]` and independently update
+`ToLeaf[source][feedbackLbTag]` when feedback is present. Both directions use
+the same logic, including data carrying feedback about ACK paths.
+
+New/changed entries receive feedback priority, selected round-robin; otherwise
+fresh entries are refreshed round-robin. Each peer has an independent cursor.
+Both tables invalidate entries after 10 ms without a received update, checked
+lazily on reads and selection. Sending feedback does not refresh the underlying
+observation. Unknown/expired differs from measured zero; no reverse traffic
+means no feedback transmission. These are documented lab policies, separate
+from DRE decay. Congestion-aware CONGA selection remains future work;
+`--lb=conga` now runs `load-balancers/conga.*`, a separate scaffold with copied
+ECMP hashing and forward/reverse execution paths. Each balancer's `selectRoute()`
+owns its path selection and route assembly. The testbed generates endpoints and
+prebuilds candidate `RoutePath` objects with opaque IDs and variable-length
+forward/reverse hop lists, including tagging/feedback hooks. Its
+`buildFabricPath()` retains the detailed per-hop comments. `RouteContext`
+references the cached candidates and supplies access/delivery hops;
+the balancer returns a complete `RoutePath` containing its ID and both execution
+routes. The caller moves the returned vectors into the installed routes.
+Same-leaf traffic returns a direct path through this same interface; there is
+no separate selection descriptor, candidate-index API, or output-route parameter.
+Each `selectRoute()` derives its available path count from the input context;
+policy constructors configure the routing seed only. `PathId` is a distinct
+type requiring explicit construction from an integer. Policies have no core-number convention;
+only the testbed maps the selected ID to a core for legacy CSV statistics.
+Other topologies can supply aggregation paths or tunnels with different hop
+counts. The current candidates still use the same core for data and ACKs.
+Test the leaf cycle
+with `bash htsim/tests/test-leaf-feedback.sh`. Both data and ACK
 packets reset every metadata field when allocated from their pools, then inherit
 the current flow's leaf IDs. `valid` and `feedbackValid` independently indicate
 which parts of the header are meaningful.

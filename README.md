@@ -124,15 +124,38 @@ Experiment 2 builds the complete leaf/core topology and uses a deterministic
 hash to select an equal-cost core per flow. CONGA table-driven selection is
 still tracked in `TODO.md`.
 
-The route callback captures a `shared_ptr<LoadBalancer>` by value. The
-`EcmpLoadBalancer` implementation in `htsim/load-balancers/ecmp.*` owns the
-current hash-based uplink policy; `htsim/load-balancers/load-balancer.h` defines
-the abstract interface. Add future policies alongside ECMP in that directory.
+The route callback captures a `shared_ptr<LoadBalancer>` by value. The topology
+prebuilds candidate `RoutePath` objects, each containing an opaque `pathId` and
+variable-length forward/reverse hop lists. They may represent an uplink path
+or a tunnel; the balancer does not assume any switch tier or hop count.
+`load-balancers/route-context.h` supplies these candidates plus access/delivery
+hops. The selected policy's `selectRoute()` returns a complete `RoutePath`
+containing forward/reverse execution routes and their opaque ID. The caller
+moves those hop vectors into the simulator's installed routes. Selection is
+implemented entirely inside each concrete `selectRoute()`; there is no public
+candidate-index method. `RouteContext` provides endpoints, flow identity,
+candidates, and access/delivery hops. The candidate count comes from that
+request's context, so a policy instance can handle different numbers of paths.
+Constructors configure only the routing seed. `PathId` is a distinct type with
+explicit integer construction, preventing implicit mixing with candidate
+indices or core numbers. Only the testbed maps IDs
+to physical cores for the existing `.routes.csv`; same-leaf traffic is reported
+as `-1` there. Same-leaf traffic returns a direct `RoutePath` through the same
+interface, using the topology's `directPathId`. The topology supplies
+`usesFabric` in the input context; it is not part of the returned path.
+
+`EcmpLoadBalancer` in `load-balancers/ecmp.*` and `CongaLoadBalancer` in
+`load-balancers/conga.*` retain separate execution paths. The CONGA scaffold
+currently copies ECMP hashing and the same forward/reverse core choice; it
+does not use congestion to select paths. Detailed inline hop comments and
+tagging/feedback hooks live beside `buildFabricPath()` in the testbed, where
+this topology's queues, pipes, and leaf switches are connected. Candidate
+paths are cached per leaf pair, so their hop lists are not rebuilt per flow.
 
 | Flag | Default | Description |
 |---|---:|---|
 | `--duration` | `5` | Simulation duration in seconds. |
-| `--lb` | `ecmp` | `ecmp` selects the ECMP baseline; `conga` exits with a not-implemented error. |
+| `--lb` | `ecmp` | `ecmp` selects the baseline; `conga` runs a separate scaffold currently using identical ECMP selection and tagging. |
 | `--small` | `0` | `1` uses 2 cores, 2 leaves, and 2 servers per leaf for debugging; `0` uses the required full topology. |
 | `--routingseed` | value of `--rngseed` | Independent seed for load-balancer choices and future tie-breaking. |
 | `--utilization` | `0.1` | Offered load relative to aggregate server-facing capacity. |
@@ -189,10 +212,11 @@ do not increment X. The source-leaf wrapper sets `LBTag` and clears `CE` on
 ingress. Each wrapper intercepts the existing queue-service notification to
 increment X and accumulate the maximum metric in CE before forwarding; it
 also delegates logging to the original statistics logger. Data and ACK
-traversals are measured independently. ACKs now carry
-the triggering data packet's observed `LBTag`/`CE` back as feedback. This is
-an immediate observation echo; distributed leaf tables, feedback scheduling,
-aging, and congestion-aware CONGA routing are not implemented yet.
+traversals are measured independently. Experiment 2 now installs a `LeafSwitch`
+at each leaf to collect observations and exchange table-selected feedback on
+both data and ACK packets. Congestion-aware CONGA route selection remains
+unimplemented; both `--lb=ecmp` and the `--lb=conga` scaffold exercise these hooks
+on static paths selected by the same hash.
 
 The packet metadata in `packets/conga-metadata.h` contains:
 
@@ -204,7 +228,9 @@ The packet metadata in `packets/conga-metadata.h` contains:
 
 Experiment 2 supplies each flow's leaf IDs from its host endpoints. Data
 and retransmissions inherit forward IDs; ACKs inherit reversed IDs. The ACK
-factory copies the forward observation before the data packet is freed,
+factory copies the forward observation before the data packet is freed as a
+fallback for routes without leaf hooks. In experiment 2 the outgoing leaf
+replaces that echo with table-selected feedback (or clears it if none is fresh),
 while source-uplink initialization preserves feedback and starts a fresh CE.
 TCP/DCTCP, TIMELY, and packet-pair sinks use this factory. Same-leaf traffic
 has leaf IDs but no fabric measurement or valid measurement feedback.
@@ -215,6 +241,35 @@ Run `bash htsim/tests/test-conga-metadata.sh` to verify actual transport sinks,
 ACK leaf reversal, feedback preservation through reverse ingress, and existing
 ECN behavior. `bash htsim/tests/test-dre.sh` also checks all metadata fields
 on data/ACK pool reuse and rejects invalid or mismatched observations.
+
+Leaf state lives in `leaf-switches/leafswitch.h/.cpp`. Every leaf preallocates
+`ToLeaf[peer][uplink]` and `FromLeaf[peer][uplink]` for the active topology;
+there is no route discovery. `receivePacket()` runs after fabric propagation
+and before the host-facing queue. For an incoming A→B packet it records
+`B.FromLeaf[A][LBTag] = CE` and independently applies any carried feedback to
+`B.ToLeaf[A][feedbackLbTag]`. `egress()` runs before the outgoing fabric queue
+and selects feedback from `FromLeaf[destination]`. Both hooks call `sendOn()`
+without adding queueing or delay; same-leaf routes bypass them.
+
+Feedback policy: new or changed observations have priority, with round-robin
+selection among pending entries. When none are pending, refresh all fresh
+entries round-robin. Each peer has its own cursor; selection uses no RNG.
+Entries store validity, metric, update timestamp, and pending status. Unknown
+and expired entries are invalid, distinct from a measured zero. Both tables
+expire lazily **10 ms** after their last received update (`LeafSwitch`'s
+constructor parameter); expiration invalidates rather than decays the metric.
+This is a lab policy, separate from DRE decay. Sending feedback clears pending
+status but does not refresh the observation timestamp. Repeated observations
+refresh timestamps without clearing pending changes. Without reverse traffic,
+feedback waits; no standalone feedback packets are generated. Strict changed
+priority can delay unchanged refreshes during continuous metric changes.
+
+`toLeaf(peer, uplink, now)` and `fromLeaf(peer, uplink, now)` expose fresh
+snapshots for debugging and later route selection. Invalid IDs/tags/metrics on
+incoming packets are ignored; unrelated cells are preserved. Leaf tables are
+not yet exported to CSV. Run `bash htsim/tests/test-leaf-feedback.sh` for exact
+cell updates, feedback priority/round-robin, expiry boundaries, and a TCP ACK
+round trip with different forward and return uplinks.
 
 The tracker now uses the quoted paper rule: increment `X` by each transmitted
 packet's size, and every Tdre apply `X *= (1 - alpha)`. Its normalization is
@@ -241,6 +296,7 @@ congestion/       # DRE tracker and queue wrapper
 packets/          # Packet, PacketFlow, data/ACK pools, and CONGA metadata
 stats/            # Experiment statistics (AI-generated notices retained)
 load-balancers/   # Load-balancer interface and ECMP policy
+leaf-switches/    # Per-leaf tables and incoming/outgoing feedback hooks
 ```
 
 Run `bash htsim/tests/test-dre.sh` to check periodic tick boundaries, quantization,
@@ -295,16 +351,18 @@ CONGA paths in the same experiment so they share topology and workload code.
 | File | Required changes |
 |---|---|
 | `htsim/test_conga_testbed.cpp` | Extend the implemented 12-core/24-leaf/768-server topology and route generator with selectable ECMP and CONGA policies. |
+| `htsim/load-balancers/conga.h`, `htsim/load-balancers/conga.cpp` | Replace the scaffold's copied ECMP selection and evolve its independent route construction for CONGA. |
+| `htsim/load-balancers/ecmp.*`, `htsim/load-balancers/route-context.h` | ECMP selection, opaque path IDs, variable-length candidate hops, and complete `RoutePath` results; core mapping stays in the testbed. |
 | `htsim/packets/network.h` | Contains packet accessors and flow leaf context; `packets/conga-metadata.h` defines leaf IDs, validity, path measurement, and feedback fields. |
 | `htsim/packets/network.cpp` | Resets CONGA metadata in `Packet::set()` because packet objects are pooled and reused. |
-| `htsim/packets/datapacket.h`, `htsim/tcp.cpp`, `htsim/timely.cpp`, `htsim/packetpair.cpp` | ACK factory and sinks copy observed path feedback before freeing the received data packet. Leaf-table-driven feedback selection can extend this later. |
+| `htsim/packets/datapacket.h`, `htsim/tcp.cpp`, `htsim/timely.cpp`, `htsim/packetpair.cpp` | ACK factory and sinks copy observed path feedback before freeing the received data packet. Experiment 2's leaf hook replaces this fallback with table-selected feedback. |
 
 The following new files are recommended to keep CONGA logic out of generic
 simulator components:
 
 | New file | Responsibility |
 |---|---|
-| `htsim/leafswitch.h`, `htsim/leafswitch.cpp` | Store Congestion-To-Leaf and Congestion-From-Leaf tables, process forward/feedback metadata, and choose the minimum-congestion uplink. |
+| `htsim/leaf-switches/leafswitch.h`, `htsim/leaf-switches/leafswitch.cpp` | Implemented To-/From-Leaf tables, receive processing, changed-first round-robin feedback, and expiry; expose To-Leaf snapshots for future CONGA selection. |
 | `htsim/congestion/dre.*`, `htsim/congestion/dre-queue-wrapper.*` (implemented) | Maintain simulation-time congestion estimates independently of queue discipline and update packet `CE` on fabric links. |
 
 Depending on the measurement design, also update `htsim/flow-generator.h/.cpp`

@@ -68,6 +68,11 @@ class Packet
         _conga.feedbackLbTag = uplink;
         _conga.feedbackMetric = metric;
     }
+    void clearCongaFeedback() {
+        _conga.feedbackValid = false;
+        _conga.feedbackLbTag = 0;
+        _conga.feedbackMetric = 0;
+    }
     const CongaMetadata &congaMetadata() const { return _conga; }
     void accumulateCe(uint32_t metric) {
         if (_conga.valid && metric > _conga.ce) {

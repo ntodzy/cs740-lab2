@@ -66,6 +66,11 @@ const first = run('full-first');
 const repeat = run('full-repeat');
 check(first, 12, 24, 768);
 assert.deepEqual(first, repeat, 'Identical seeds must reproduce routes, counters, and FCT output');
+const conga = run('full-conga-scaffold', {lb: 'conga'});
+check(conga, 12, 24, 768);
+assert.deepEqual(conga.records, first.records,
+    'CONGA scaffold must preserve ECMP routes, link/DRE statistics, and completion counts');
+console.log('CONGA scaffold: copied execution path matches ECMP on the full topology');
 const selected = new Set(first.records.routes.map(r => +r.core));
 for (let core = 0; core < 12; core++) {
     assert.ok(selected.has(core), `Core ${core} was never selected`);
