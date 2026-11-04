@@ -22,12 +22,22 @@ void ExperimentStats::registerLink(Queue &queue, linkspeed_bps speed, int core,
     link.speed = speed;
     link.core = core;
     link.dre = dre;
-    _links.emplace(queue.id, link);
+    const auto entry = _links.emplace(queue.id, link);
+    if (!entry.second) {
+        throw std::invalid_argument("Queue already registered for experiment statistics");
+    }
+    _linkLoggers.emplace_back(new LinkLogger(*this, entry.first->second));
+    queue.setLogger(_linkLoggers.back().get());
 }
 
 void ExperimentStats::logQueue(Queue &queue, QueueEvent event, Packet &packet)
 {
     Link &link = _links.at(queue.id);
+    recordQueue(link, event, packet);
+}
+
+void ExperimentStats::recordQueue(Link &link, QueueEvent event, Packet &packet)
+{
     if (event == PKT_ENQUEUE) {
         ++link.arrivals;
         link.arrivalBytes += packet.size();
@@ -35,8 +45,10 @@ void ExperimentStats::logQueue(Queue &queue, QueueEvent event, Packet &packet)
         ++link.departures;
         link.departureBytes += packet.size();
         if (link.core >= 0) {
-            auto entry = _flowCores.emplace(packet.flow().id, link.core);
-            if (!entry.second && entry.first->second != link.core) {
+            const auto entry = _flowCores.find(packet.flow().id);
+            if (entry == _flowCores.end()) {
+                _flowCores.emplace(packet.flow().id, link.core);
+            } else if (entry->second != link.core) {
                 ++_routeViolations;
             }
         }

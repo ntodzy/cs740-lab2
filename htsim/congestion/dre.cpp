@@ -14,6 +14,8 @@ DreTracker::DreTracker(linkspeed_bps rate, simtime_picosec interval, double alph
 
 void DreTracker::decay(simtime_picosec now)
 {
+    // recordPacket() followed by metric() observes the same register and time.
+    if (now == _lastUpdate) return;
     if (now < _lastUpdate) {
         throw std::invalid_argument("DRE timestamps cannot move backwards");
     }

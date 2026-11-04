@@ -32,9 +32,9 @@ EventList::doNextEvent()
         return false;
     }
 
-    simtime_picosec nexteventtime = _pendingsources.begin()->first;
-    EventSource *nextsource = _pendingsources.begin()->second;
-    _pendingsources.erase(_pendingsources.begin());
+    simtime_picosec nexteventtime = _pendingsources.top().time;
+    EventSource *nextsource = _pendingsources.top().source;
+    _pendingsources.pop();
 
     assert(nexteventtime >= _lasteventtime);
 
@@ -77,6 +77,6 @@ EventList::sourceIsPending(EventSource &src,
     assert(when >= now());
 
     if (_endtime == 0 || when <= _endtime) {
-        _pendingsources.insert(make_pair(when, &src));
+        _pendingsources.push(PendingEvent{when, _nextSequence++, &src});
     }
 }

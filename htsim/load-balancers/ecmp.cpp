@@ -12,8 +12,7 @@ EcmpLoadBalancer::selectRoute(const RouteContext &context)
     route.pathId = context.directPathId;
     route_t *fwd = &route.forward;
     route_t *rev = &route.reverse;
-    fwd->insert(fwd->end(), context.forward.access.begin(), context.forward.access.end());
-    rev->insert(rev->end(), context.reverse.access.begin(), context.reverse.access.end());
+    const RoutePath *selected = nullptr;
 
     // LOAD BALANCER: choose among the topology's available forwarding options.
     // Local traffic needs no fabric path selection.
@@ -30,13 +29,25 @@ EcmpLoadBalancer::selectRoute(const RouteContext &context)
         const size_t selectedPath = mix(mix(endpoints) ^ mix(context.flowId) ^ mix(_routingSeed))
             % context.paths.size();
         const RoutePath &path = context.paths.at(selectedPath);
+        selected = &path;
         // Congestion is optional for ECMP. Carry supplied observations for
         // reporting without making them a prerequisite for selecting a path.
-        const auto measurement = context.congestion.find(path.pathId);
-        if (measurement != context.congestion.end()) {
-            route.metrics = measurement->second.measurements();
+        if (selectedPath < context.congestion.size() && context.congestion[selectedPath].available) {
+            route.metrics = context.congestion[selectedPath].measurements();
         }
         route.pathId = path.pathId; // An opaque ID, not a core or candidate index.
+    }
+
+    // Build the complete forward and reverse routes, including access and delivery hops.
+    // We reserve the total size to avoid repeated reallocations/resize, then append each segment.
+    fwd->reserve(context.forward.access.size() + context.forward.delivery.size()
+                 + (selected ? selected->forward.size() : 0));
+    rev->reserve(context.reverse.access.size() + context.reverse.delivery.size()
+                 + (selected ? selected->reverse.size() : 0));
+    fwd->insert(fwd->end(), context.forward.access.begin(), context.forward.access.end());
+    rev->insert(rev->end(), context.reverse.access.begin(), context.reverse.access.end());
+    if (selected) {
+        const RoutePath &path = *selected;
 
         // Install the selected path for all data packets and reverse ACKs
         // in this flow (the lab treats a whole flow as one flowlet).

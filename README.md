@@ -147,7 +147,10 @@ interface, using the topology's `directPathId`. The topology supplies
 `FlowGenerator` assigns the flow sequence ID and passes it into the route
 callback; statistics never allocates IDs, so sampling or disabling records
 cannot change routing identity. The testbed snapshots local DRE and
-expiry-aware To-Leaf state into `congestion[PathId]` at one decision timestamp.
+expiry-aware To-Leaf state into `congestion[i]` for `paths[i]` at one decision timestamp.
+Snapshots are contiguous and follow candidate order; opaque path IDs and explicit
+uplink tags retain their separate meanings. Reordering candidates requires
+reordering their snapshots together.
 Each value contains the source uplink, local metric, remote metric, and remote
 validity. `RouteContext` exposes no leaf object or live congestion tables.
 CONGA uses these values without knowing table storage or simulator objects;
@@ -235,6 +238,12 @@ remote bottlenecks, cold start/expiry, path IDs independent of uplink numbers,
 deterministic ties, invalid routing contexts, and a TCP/DRE feedback round trip
 that changes a later flow's selected path. `node htsim/tests/test-ecmp.mjs`
 checks both modes, all queue disciplines, and decision/selection CSV counts.
+Run `bash htsim/tests/test-eventlist.sh` to check scheduler ordering, including
+events with equal timestamps, callbacks that schedule immediate events, and
+the simulation cutoff. The scheduler uses a heap with insertion sequence numbers
+to preserve ordering while avoiding an allocation for every event.
+Queue statistics bind counters when links are registered, avoiding per-packet
+queue lookups. The statistics recorder must outlive notifications from those queues.
 
 Every directional fabric link also has a `DreQueueWrapper` around its existing
 queue. This preserves FIFO/FQ/AFQ/PQ/SFQ behavior. Its independent DRE measures

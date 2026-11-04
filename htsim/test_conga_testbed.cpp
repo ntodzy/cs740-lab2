@@ -361,20 +361,27 @@ conga::generateRandomRoute(LoadBalancer &loadBalancer,
     context.flowId = flowId;
     context.now = EventList::Get().now();
     context.usesFabric = srcLeaf != dstLeaf;
+
+
+    // Queue and Pipe  (q,p) set
+    // Initial setup for forward and reverse routes.
     context.forward.access = {qServerLeaf[srcLeaf][srcServer], pServerLeaf[srcLeaf][srcServer]};
     context.forward.delivery = {qLeafServer[dstLeaf][dstServer], pLeafServer[dstLeaf][dstServer]};
     context.reverse.access = {qServerLeaf[dstLeaf][dstServer], pServerLeaf[dstLeaf][dstServer]};
     context.reverse.delivery = {qLeafServer[srcLeaf][srcServer], pLeafServer[srcLeaf][srcServer]};
+
     // Snapshot local and fresh remote state at one timestamp in both modes.
     // Path IDs identify candidates; uplink tags identify leaf-table cells.
+    context.congestion.reserve(context.paths.size());
     for (const auto &candidate : context.paths) {
         const uint32_t uplink = sourceUplinkForPath.at(candidate.pathId);
         const auto remote = leafSwitches[srcLeaf]->toLeaf(dstLeaf, uplink, context.now);
-        context.congestion.emplace(candidate.pathId, CandidateCongestion{
+        context.congestion.push_back(CandidateCongestion{
             uplink, wLeafCore[srcLeaf][uplink]->congestionMetric(context.now),
             remote.metric, remote.valid});
     }
     RoutePath path = loadBalancer.selectRoute(context);
+
     // Statistics consumes an immutable record; it cannot query live tables or rescore.
     stats.recordDecision(RouteDecision(mode, context, path));
     fwd = new route_t(std::move(path.forward));

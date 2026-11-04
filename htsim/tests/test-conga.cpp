@@ -19,6 +19,18 @@ void require(bool condition, const char *message)
     if (!condition) throw std::runtime_error(message);
 }
 
+// Test setup resolves opaque IDs once; selection consumes aligned snapshots.
+CandidateCongestion &measurement(RouteContext &context, PathId id)
+{
+    if (context.congestion.size() < context.paths.size()) {
+        context.congestion.resize(context.paths.size());
+    }
+    for (size_t i = 0; i < context.paths.size(); ++i) {
+        if (context.paths[i].pathId == id) return context.congestion[i];
+    }
+    throw std::runtime_error("Unknown test path ID");
+}
+
 class Hop : public PacketSink
 {
 public:
@@ -65,7 +77,7 @@ void configure(RouteContext &context, const LeafSwitch &source)
 void refreshFeedback(RouteContext &context, const LeafSwitch &source)
 {
     for (auto &entry : context.congestion) {
-        auto &measurement = entry.second;
+        auto &measurement = entry;
         const auto remote = source.toLeaf(context.dstLeaf, measurement.sourceUplink, context.now);
         measurement.remoteMetric = remote.metric;
         measurement.remoteValid = remote.valid;
@@ -106,12 +118,22 @@ void testLocalRemoteAndStale()
     context.reverse.access = {&hops[6]};
     context.reverse.delivery = {&hops[7]};
     // Candidate order, IDs, and source-uplink columns are deliberately unrelated.
-    context.congestion[PathId(101)] = CandidateCongestion{2, 1};
-    context.congestion[PathId(0)] = CandidateCongestion{0, 5};
-    context.congestion[PathId(9001)] = CandidateCongestion{1, 7};
+    measurement(context, PathId(101)) = CandidateCongestion{2, 1};
+    measurement(context, PathId(0)) = CandidateCongestion{0, 5};
+    measurement(context, PathId(9001)) = CandidateCongestion{1, 7};
     CongaLoadBalancer policy(42);
     refreshFeedback(context, source);
     expectPath(policy, context, PathId(101), "Local congestion did not choose the minimum");
+    auto reordered = paths;
+    std::reverse(reordered.begin(), reordered.end());
+    RouteContext permuted(reordered);
+    configure(permuted, source);
+    permuted.congestion = context.congestion;
+    std::reverse(permuted.congestion.begin(), permuted.congestion.end());
+    const auto reorderedRoute = policy.selectRoute(permuted);
+    require(reorderedRoute.pathId == PathId(101) && reorderedRoute.metrics.sourceUplink == 2 &&
+            reorderedRoute.metrics.localMetric == 1,
+            "Reordered snapshots lost their candidate binding");
 
     feedback(source, 1, 2, 6);
     // Table changes are invisible until a new context snapshot is constructed.
@@ -145,7 +167,7 @@ void testLocalRemoteAndStale()
     const std::vector<RoutePath> one{paths[2]};
     RouteContext single(one);
     configure(single, source);
-    single.congestion[PathId(9001)] = CandidateCongestion{1, 0};
+    measurement(single, PathId(9001)) = CandidateCongestion{1, 0};
     expectPath(policy, single, PathId(9001), "Policy cached the previous candidate count");
 
     const std::vector<RoutePath> none;
@@ -172,9 +194,10 @@ void testTiesAndRandomness()
     configure(context, source);
     configure(permuted, source);
     for (uint32_t i = 0; i < paths.size(); ++i) {
-        context.congestion[paths[i].pathId] = CandidateCongestion{i, 0};
+        measurement(context, paths[i].pathId) = CandidateCongestion{i, 0};
     }
     permuted.congestion = context.congestion;
+    std::reverse(permuted.congestion.begin(), permuted.congestion.end());
     CongaLoadBalancer first(42), repeat(42), different(43);
     std::srand(12314);
     const int expectedDraw = std::rand();
@@ -216,20 +239,24 @@ void testInvalidContext()
     const std::vector<RoutePath> paths{{PathId(101), {}, {}}, {PathId(9001), {}, {}}};
     RouteContext context(paths);
     configure(context, source);
-    context.congestion[PathId(101)] = CandidateCongestion{0, 0};
-    context.congestion[PathId(9001)] = CandidateCongestion{1, 0};
+    measurement(context, PathId(101)) = CandidateCongestion{0, 0};
+    measurement(context, PathId(9001)) = CandidateCongestion{1, 0};
     CongaLoadBalancer policy(42);
-    context.congestion.erase(PathId(101));
+    const auto saved = context.congestion;
+    context.congestion.clear();
+    rejects([&] { policy.selectRoute(context); }, "Empty snapshot vector was accepted");
+    context.congestion = saved;
+    measurement(context, PathId(101)).available = false;
     rejects([&] { policy.selectRoute(context); }, "Missing candidate metadata was accepted");
-    context.congestion[PathId(101)] = CandidateCongestion{0, 8};
+    measurement(context, PathId(101)) = CandidateCongestion{0, 8};
     rejects([&] { policy.selectRoute(context); }, "Non-three-bit local metric was accepted");
-    context.congestion[PathId(101)] = CandidateCongestion{16, 0};
+    measurement(context, PathId(101)) = CandidateCongestion{16, 0};
     rejects([&] { policy.selectRoute(context); }, "Non-four-bit uplink tag was accepted");
-    context.congestion[PathId(101)] = CandidateCongestion{0, 0, 8, true};
+    measurement(context, PathId(101)) = CandidateCongestion{0, 0, 8, true};
     rejects([&] { policy.selectRoute(context); }, "Non-three-bit remote metric was accepted");
-    context.congestion[PathId(101)] = CandidateCongestion{1, 0};
+    measurement(context, PathId(101)) = CandidateCongestion{1, 0};
     rejects([&] { policy.selectRoute(context); }, "Duplicate source uplinks were accepted");
-    context.congestion[PathId(101)] = CandidateCongestion{0, 0};
+    measurement(context, PathId(101)) = CandidateCongestion{0, 0};
     const std::vector<RoutePath> duplicates{paths[0], paths[0]};
     RouteContext duplicate(duplicates);
     configure(duplicate, source);
@@ -239,6 +266,15 @@ void testInvalidContext()
     RouteContext missing(none);
     configure(missing, source);
     rejects([&] { policy.selectRoute(missing); }, "Empty fabric candidates were accepted");
+    std::vector<RoutePath> maximumPaths;
+    for (uint32_t i = 0; i < 16; ++i) maximumPaths.emplace_back(PathId(100 + i));
+    RouteContext maximum(maximumPaths);
+    configure(maximum, source);
+    for (uint32_t i = 0; i < 16; ++i) maximum.congestion.emplace_back(i, 0);
+    policy.selectRoute(maximum); // Exercise all slots in the bounded validation array.
+    maximumPaths.emplace_back(PathId(116));
+    maximum.congestion.emplace_back(0, 0);
+    rejects([&] { policy.selectRoute(maximum); }, "More than 16 unique uplinks were accepted");
 }
 
 class AckReceiver : public DataSource
@@ -260,8 +296,8 @@ void testDecisionDiagnostics(const std::string &prefix)
     const std::vector<RoutePath> paths{{PathId(800), {}, {}}, {PathId(20), {}, {}}};
     RouteContext context(paths);
     configure(context, source);
-    context.congestion[PathId(800)] = CandidateCongestion{1, 1};
-    context.congestion[PathId(20)] = CandidateCongestion{0, 3};
+    measurement(context, PathId(800)) = CandidateCongestion{1, 1};
+    measurement(context, PathId(20)) = CandidateCongestion{0, 3};
     CongaLoadBalancer policy(42);
     {
         ExperimentStats stats(prefix);
@@ -330,8 +366,8 @@ void testFeedbackChangesFutureFlow()
     configure(context, sourceLeaf);
     context.forward.delivery = {&sink};
     context.reverse.delivery = {&source};
-    context.congestion[PathId(901)] = CandidateCongestion{0, 0};
-    context.congestion[PathId(103)] = CandidateCongestion{1, 1};
+    measurement(context, PathId(901)) = CandidateCongestion{0, 0};
+    measurement(context, PathId(103)) = CandidateCongestion{1, 1};
     CongaLoadBalancer policy(42);
     RoutePath installed = policy.selectRoute(context);
     require(installed.pathId == PathId(901), "Controlled flow did not start on uplink 0");
@@ -387,6 +423,42 @@ void testMetricsFreeRecording(const std::string &prefix)
             "Recording required congestion state or reread changed routing data");
 }
 
+void testBoundQueueCounters(const std::string &prefix)
+{
+    Queue first(1000000000ULL, 1000000, nullptr);
+    Queue second(1000000000ULL, 1000000, nullptr);
+    first.setName("first");
+    second.setName("second");
+    ExperimentStats stats(prefix);
+    stats.registerLink(first, 1000000000ULL, 3);
+    stats.registerLink(second, 1000000000ULL, 4);
+    rejects([&] { stats.registerLink(first, 1000000000ULL); },
+            "Duplicate queue registration was accepted");
+    PacketFlow flow(nullptr);
+    route_t route;
+    auto *packet = DataPacket::newpkt(flow, route, 1, 1500);
+    for (int i = 0; i < 2; ++i) {
+        first.logger()->logQueue(first, QueueLogger::PKT_ENQUEUE, *packet);
+        first.logger()->logQueue(first, QueueLogger::PKT_SERVICE, *packet);
+    }
+    second.logger()->logQueue(second, QueueLogger::PKT_SERVICE, *packet);
+    second.logger()->logQueue(second, QueueLogger::PKT_DROP, *packet);
+    packet->free();
+    FlowGenerator generator(DataSource::DCTCP, route_gen_t{}, 1000000000ULL,
+                            10000, Workloads::UNIFORM);
+    stats.write(generator, timeFromUs(100));
+    std::ifstream links(prefix + ".links.csv"), summary(prefix + ".summary.csv");
+    std::string line;
+    bool foundFirst = false, foundSecond = false;
+    while (std::getline(links, line)) {
+        foundFirst |= line.find("first,1000000000,2,3000,2,3000,0,0,") == 0;
+        foundSecond |= line.find("second,1000000000,0,0,1,1500,1,1500,") == 0;
+    }
+    std::getline(summary, line);
+    require(foundFirst && foundSecond && bool(std::getline(summary, line)) && line == "0,0,0,1",
+            "Bound queue counters mixed links or lost a route violation");
+}
+
 void testGeneratorOwnedIdentity(const std::string &prefix)
 {
     Queue dataQueue(1000000000ULL, 1000000, nullptr);
@@ -436,6 +508,7 @@ int main(int argc, char **argv)
     testDecisionDiagnostics(argv[1]);
     testFeedbackChangesFutureFlow();
     testMetricsFreeRecording(std::string(argv[1]) + "-ecmp");
+    testBoundQueueCounters(std::string(argv[1]) + "-counters");
     testGeneratorOwnedIdentity(std::string(argv[1]) + "-identity");
     std::cout << "CONGA scoring, unknown/stale policy, path mapping, tie-breaking, validation, and TCP feedback adaptation passed\n";
 }

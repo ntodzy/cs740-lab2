@@ -11,12 +11,14 @@
 #include <map>
 #include <vector>
 #include <tuple>
+#include <memory>
 
 // Counters only: no periodic sampling or per-packet disk output.
 class ExperimentStats : public QueueLogger
 {
 public:
     explicit ExperimentStats(const std::string &prefix);
+    // Installs a bound logger; this recorder must outlive queue notifications.
     void registerLink(Queue &queue, linkspeed_bps speed, int core = -1,
                       DreQueueWrapper *dre = nullptr);
     void logQueue(Queue &queue, QueueEvent event, Packet &packet) override;
@@ -34,11 +36,25 @@ private:
         uint64_t departures = 0, departureBytes = 0;
         uint64_t drops = 0, dropBytes = 0;
     };
+    // Map nodes have stable addresses. Bind once instead of looking up the
+    // queue ID for every enqueue, service, and drop notification.
+    class LinkLogger : public QueueLogger {
+    public:
+        LinkLogger(ExperimentStats &owner, Link &link) : _owner(owner), _link(link) {}
+        void logQueue(Queue &, QueueEvent event, Packet &packet) override {
+            _owner.recordQueue(_link, event, packet);
+        }
+    private:
+        ExperimentStats &_owner;
+        Link &_link;
+    };
+    void recordQueue(Link &link, QueueEvent event, Packet &packet);
     struct Route { uint64_t flowId; uint32_t source, destination; int core; };
     // Mode, source leaf, destination leaf, path ID, and uplink (-1 for local).
     typedef std::tuple<std::string, uint32_t, uint32_t, uint32_t, int> SelectionKey;
     struct SelectionCount { uint64_t selected = 0, unknownRemote = 0; };
     std::map<uint32_t, Link> _links;
+    std::vector<std::unique_ptr<LinkLogger>> _linkLoggers;
     std::map<uint32_t, int> _flowCores;
     std::vector<Route> _routes;
     std::vector<RouteDecision> _decisions;

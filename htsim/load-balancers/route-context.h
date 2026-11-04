@@ -2,7 +2,6 @@
 #define ROUTE_CONTEXT_H
 
 #include "../packets/network.h"
-#include <map>
 #include <utility>
 
 // Explicit construction prevents mixing candidate indices/core numbers with IDs.
@@ -46,18 +45,22 @@ struct RouteDirection {
 // The uplink identifies the packet's LBTag and the source leaf's table column;
 // it must not be inferred from the opaque PathId or the candidate's index.
 struct CandidateCongestion {
-    CandidateCongestion(uint32_t uplink = 0, uint32_t local = 0,
+    CandidateCongestion() : sourceUplink(0), localMetric(0), remoteMetric(0),
+                            remoteValid(false), available(false) {}
+    CandidateCongestion(uint32_t uplink, uint32_t local = 0,
                         uint32_t remote = 0, bool valid = false)
-        : sourceUplink(uplink), localMetric(local), remoteMetric(remote), remoteValid(valid) {}
+        : sourceUplink(uplink), localMetric(local), remoteMetric(remote), remoteValid(valid),
+          available(true) {}
     uint32_t sourceUplink;
     uint32_t localMetric;
     uint32_t remoteMetric;
     bool remoteValid;
+    bool available; // ECMP permits absent observations; CONGA requires them.
 
     // Shared definition of the measured path bottleneck, including cold start.
     SelectionMetrics measurements() const {
         SelectionMetrics result;
-        result.available = true;
+        result.available = available;
         result.sourceUplink = sourceUplink;
         result.localMetric = localMetric;
         result.remoteMetric = remoteValid ? remoteMetric : 0;
@@ -77,7 +80,9 @@ struct RouteContext {
     uint32_t dstLeaf = 0;
     uint64_t flowId = 0;
     simtime_picosec now = 0; // Timestamp shared by local and remote snapshots.
-    std::map<PathId, CandidateCongestion> congestion;
+    // congestion[i] measures paths[i]. The index is only a local binding:
+    // PathId stays opaque and sourceUplink remains an explicit table column.
+    std::vector<CandidateCongestion> congestion;
     bool usesFabric = false; // Supplied by the topology, not inferred by a policy.
     PathId directPathId; // Topology-defined ID for routes without fabric hops.
     RouteDirection forward;

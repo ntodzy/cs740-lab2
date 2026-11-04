@@ -7,6 +7,7 @@
 #include "htsim.h"
 #include "loggertypes.h"
 
+#include <queue>
 #include <map>
 #include <string>
 #include <unordered_map>
@@ -52,8 +53,20 @@ class EventList
 
         static EventList *instance;
 
-        typedef std::multimap<simtime_picosec,EventSource*> pendingsources_t;
-        pendingsources_t _pendingsources;
+        struct PendingEvent {
+            simtime_picosec time;
+            uint64_t sequence;
+            EventSource *source;
+        };
+        struct LaterEvent {
+            bool operator()(const PendingEvent &a, const PendingEvent &b) const {
+                return a.time > b.time || (a.time == b.time && a.sequence > b.sequence);
+            }
+        };
+        // Sequence preserves the multimap's insertion order at equal timestamps,
+        // including events scheduled by a callback for the current time.
+        std::priority_queue<PendingEvent, std::vector<PendingEvent>, LaterEvent> _pendingsources;
+        uint64_t _nextSequence = 0;
         simtime_picosec _endtime;
         simtime_picosec _lasteventtime;
 };
