@@ -10,6 +10,7 @@
 #include "load-balancers/ecmp.h"
 #include "load-balancers/conga.h"
 #include "stats/experiment-stats.h"
+#include "stats/output-options.h"
 #include "congestion/dre-queue-wrapper.h"
 #include "leaf-switches/leafswitch.h"
 
@@ -144,7 +145,8 @@ conga_testbed(const ArgList &args, Logfile &logfile)
         ? TopologyConfig{2, 2, 2}
         : TopologyConfig{N_CORE, N_LEAF, N_SERVER};
 
-    if (duration == 0 || utilization <= 0 || linkDelay < 0) {
+    if (duration == 0 || !std::isfinite(utilization) || utilization <= 0 ||
+        !std::isfinite(linkDelay) || linkDelay < 0) {
         cerr << "duration and utilization must be positive; linkdelay cannot be negative\n";
         exit(1);
     }
@@ -154,7 +156,7 @@ conga_testbed(const ArgList &args, Logfile &logfile)
         loadBalancer = make_shared<EcmpLoadBalancer>(routingSeed);
     } else if (lb == "conga") {
         loadBalancer = make_shared<CongaLoadBalancer>(routingSeed);
-        cerr << "CONGA selection: max(local DRE, fresh remote feedback), stable per-flow ties\n";
+        if (output::verbose()) cerr << "CONGA selection: max(local DRE, fresh remote feedback), stable per-flow ties\n";
     } else {
         cerr << "Unknown load balancer: " << lb << "; expected ecmp or conga\n";
         exit(1);
@@ -282,13 +284,40 @@ conga_testbed(const ArgList &args, Logfile &logfile)
                                                       avgFlowSize,
                                                       distribution);
     runGenerator = flowGenerator;
+    RunConfiguration config;
+    config.mode = lb;
+    config.workload = flowDist;
+    config.load = utilization;
+    config.seed = trafficSeed;
+    config.routingSeed = routingSeed;
+    config.durationSeconds = duration;
+    config.flowsizeBytes = avgFlowSize;
+    config.endhost = endHost;
+    config.queue = queueType;
+    config.small = small != 0;
+    config.verbose = output::verbose();
+    config.cores = topology.cores;
+    config.leaves = topology.leaves;
+    config.serversPerLeaf = topology.serversPerLeaf;
+    config.serverLinkBps = LEAF_SPEED;
+    config.fabricLinkBps = CORE_SPEED;
+    config.linkDelayUs = linkDelay;
+    config.dreIntervalUs = dreIntervalUs;
+    config.dreAlpha = dreAlpha;
+    config.dreLevels = dreLevels;
+    stats->configureRun(config);
+    flowGenerator->setCompletionCallback([stats](const FlowCompletion &flow) {
+        stats->recordCompletion(flow);
+    });
     flowGenerator->setServersPerLeaf(topology.serversPerLeaf);
     flowGenerator->setTimeLimits(timeFromUs(1), timeFromSec(duration) - 1);
     EventList::Get().setEndtime(timeFromSec(duration));
 
-    cerr << "CONGA topology: " << topology.cores << " cores, " << topology.leaves
-         << " leaves, " << topology.nodes() << " servers" << endl;
-    cerr << "Traffic seed: " << trafficSeed << ", routing seed: " << routingSeed << endl;
+    if (output::verbose()) {
+        cerr << "CONGA topology: " << topology.cores << " cores, " << topology.leaves
+             << " leaves, " << topology.nodes() << " servers" << endl;
+        cerr << "Traffic seed: " << trafficSeed << ", routing seed: " << routingSeed << endl;
+    }
 }
 
 // This topology resolves a candidate into leaf/core queues, pipes, and hooks.
@@ -431,4 +460,7 @@ conga::nameObject(Logged &object, const string &name, Logfile &logfile,
 void finish_conga_testbed()
 {
     conga::runStats->write(*conga::runGenerator, EventList::Get().now());
+    cout << "generated=" << conga::runGenerator->generatedFlows()
+         << " completed=" << conga::runGenerator->generatedFlows() - conga::runGenerator->liveFlows()
+         << " incomplete=" << conga::runGenerator->liveFlows() << '\n';
 }

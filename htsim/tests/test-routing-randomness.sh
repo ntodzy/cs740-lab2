@@ -16,7 +16,7 @@ for workload in uniform pareto enterprise datamining; do
             prefix="$test_dir/$workload-$mode-$seed"
             ./htsim --expt=2 --lb="$mode" --small=1 --duration=1 --utilization=0.0001 \
                 --flowsize=10000 --flowdist="$workload" --rngseed=12314 \
-                --routingseed="$seed" --logfile="$prefix" \
+                --routingseed="$seed" --logfile="$prefix" --verbose=1 \
                 > "$prefix.out" 2> "$prefix.err"
             # Source records contain name, start time, ID, size, source, destination.
             # Ignore IDs: they are simulator objects, not part of the traffic demand.

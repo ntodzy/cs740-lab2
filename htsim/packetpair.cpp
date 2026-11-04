@@ -1,4 +1,5 @@
 #include "packetpair.h"
+#include "stats/output-options.h"
 #include "flow-generator.h"
 
 #define TRACE_FLOW 0 && "ppSrc"
@@ -92,13 +93,15 @@ PacketPairSrc::doNextEvent()
     // Retransmission timeout.
     else if (_rto_timeout != 0 && current_ts >= _rto_timeout) {
 
-        cout << str() << " TMOUT " << timeAsMs(current_ts)
-             << " RTO " << timeAsUs(_rto)
-             << " MDEV " << timeAsUs(_mdev)
-             << " RTT "<< timeAsUs(_rtt)
-             << " SEQ " << _last_acked
-             << " RTO_timeout " << timeAsMs(_rto_timeout)
-             << " STATE " << _state << endl;
+        if (output::verbose()) {
+            cout << str() << " TMOUT " << timeAsMs(current_ts)
+                 << " RTO " << timeAsUs(_rto)
+                 << " MDEV " << timeAsUs(_mdev)
+                 << " RTT "<< timeAsUs(_rtt)
+                 << " SEQ " << _last_acked
+                 << " RTO_timeout " << timeAsMs(_rto_timeout)
+                 << " STATE " << _state << endl;
+        }
 
         _recover_seq = _highest_sent;
         _highest_sent = _last_acked + MSS_BYTES;
@@ -147,22 +150,26 @@ PacketPairSrc::receivePacket(Packet& pkt)
         }
         _state = FINISH;
 
-        cout << setprecision(6) << "Flow " << str() << " size " << _flowsize
-             << " start " << lround(timeAsUs(_start_time)) << " end " << lround(timeAsUs(current_ts))
-             << " fct " << timeAsUs(current_ts - _start_time)
-             << " sent " << _highest_sent << " " << _packets_sent - _highest_sent
-             << " tput " << speedAsGbps(seqno * 8 / timeAsSec(current_ts - _start_time))
-             << " rate " << speedAsGbps(_rate_estimate)
-             << " bdp " << _bdp_estimate
-             << " alpha " << _alpha
-             << " minrtt " << _min_rtt << endl;
+        if (output::verbose()) {
+            cout << setprecision(6) << "Flow " << str() << " size " << _flowsize
+                 << " start " << lround(timeAsUs(_start_time)) << " end " << lround(timeAsUs(current_ts))
+                 << " fct " << timeAsUs(current_ts - _start_time)
+                 << " sent " << _highest_sent << " " << _packets_sent - _highest_sent
+                 << " tput " << speedAsGbps(seqno * 8 / timeAsSec(current_ts - _start_time))
+                 << " rate " << speedAsGbps(_rate_estimate)
+                 << " bdp " << _bdp_estimate
+                 << " alpha " << _alpha
+                 << " minrtt " << _min_rtt << endl;
+        }
 
         return;
     }
 
     // Delayed / reordered ack. Shouldn't happen for simple queues.
     if (seqno < _last_acked) {
-        cout << str() << " ACK from the past: seqno " << seqno << " _last_acked " << _last_acked << endl;
+        if (output::verbose()) {
+            cout << str() << " ACK from the past: seqno " << seqno << " _last_acked " << _last_acked << endl;
+        }
         return;
     }
 
@@ -302,8 +309,10 @@ PacketPairSrc::receivePacket(Packet& pkt)
         } else {
             // Resume nomal service.
             if (TRACE_FLOW == str()) {
-                cout << str() << " at " << timeAsMs(current_ts) << " exiting FR "
+                if (output::verbose()) {
+                    cout << str() << " at " << timeAsMs(current_ts) << " exiting FR "
                     << _recover_seq << " " << seqno << endl;
+                }
             }
             _dupacks = 0;
             _state = NORMAL;
@@ -336,8 +345,10 @@ PacketPairSrc::receivePacket(Packet& pkt)
     retransmitPacket(current_ts);
 
     if (TRACE_FLOW == str()) {
-        cout << str() << " FASTXMIT " << timeAsMs(current_ts) << " entering FR "
-             << _recover_seq << " " << seqno << endl;
+        if (output::verbose()) {
+            cout << str() << " FASTXMIT " << timeAsMs(current_ts) << " entering FR "
+                 << _recover_seq << " " << seqno << endl;
+        }
     }
 }
 
@@ -374,8 +385,10 @@ PacketPairSrc::transmitPacketPair(simtime_picosec current_ts)
     }
 
     if (TRACE_FLOW == str()) {
-        cout << str() << " SEND " << timeAsMs(current_ts) << " " << _highest_sent
-             << " " << _last_acked << " " << (_highest_sent - _last_acked) << endl;
+        if (output::verbose()) {
+            cout << str() << " SEND " << timeAsMs(current_ts) << " " << _highest_sent
+                 << " " << _last_acked << " " << (_highest_sent - _last_acked) << endl;
+        }
     }
 
     DataPacket *p;
@@ -413,7 +426,9 @@ void
 PacketPairSrc::retransmitPacket(simtime_picosec current_ts)
 {
     if (TRACE_FLOW == str()) {
-        cout << str() << " RETX " << timeAsMs(current_ts) << " " << _last_acked << endl;
+        if (output::verbose()) {
+            cout << str() << " RETX " << timeAsMs(current_ts) << " " << _last_acked << endl;
+        }
     }
 
     DataPacket *p;
@@ -468,8 +483,10 @@ PacketPairSink::receivePacket(Packet& pkt)
         }
 
         if (_pktpairdiff > 0 && _pktpairdiff < 800000) {
-            cout << str() << " WTF! " << seqno << " " << EventList::Get().now()
-                 << " " << _first_pair_ts << " " << _pktpairdiff << " " << p->size() << endl;
+            if (output::verbose()) {
+                cout << str() << " WTF! " << seqno << " " << EventList::Get().now()
+                << " " << _first_pair_ts << " " << _pktpairdiff << " " << p->size() << endl;
+            }
         }
 
         _first_pair_ts = 0;
@@ -477,8 +494,10 @@ PacketPairSink::receivePacket(Packet& pkt)
     }
 
     if (TRACE_FLOW == _src->str()) {
-        cout << _src->str() << " SINK-TS: " << timeAsMs(EventList::Get().now()) << " at " << seqno
-             << " PPD " << timeAsUs(_pktpairdiff) << " ECN " << (int)p->getFlag(Packet::ECN_FWD) << endl;
+        if (output::verbose()) {
+            cout << _src->str() << " SINK-TS: " << timeAsMs(EventList::Get().now()) << " at " << seqno
+                 << " PPD " << timeAsUs(_pktpairdiff) << " ECN " << (int)p->getFlag(Packet::ECN_FWD) << endl;
+        }
     }
 
     DataAck *ack = DataAck::newpkt(_src->_flow, *_route, _pktpairdiff, _cumulative_ack,

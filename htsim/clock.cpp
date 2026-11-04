@@ -2,6 +2,7 @@
  * Simulator clock
  */
 #include "clock.h"
+#include "stats/output-options.h"
 
 using namespace std;
 
@@ -52,7 +53,7 @@ Clock::doNextEvent()
         simtime_picosec simDiff = current_ts - _simTime;
         _simTime = current_ts;
 
-        fprintf(stderr, "| simtime  %9.6lf | realtime  %6.1lf | speed  %8.6lf  @ %5lu Kops/s |\n",
+        if (output::verbose()) fprintf(stderr, "| simtime  %9.6lf | realtime  %6.1lf | speed  %8.6lf  @ %5lu Kops/s |\n",
                 timeAsSec(current_ts), _elapsedRT, timeAsSec(simDiff), eventsPerSec);
 
         if (DEBUG_HTSIM) {
@@ -61,7 +62,7 @@ Clock::doNextEvent()
             }
         }
     } else {
-        fprintf(stderr, ".");
+        if (output::verbose()) fprintf(stderr, ".");
     }
 
     EventList::Get().sourceIsPendingRel(*this, _estimate);

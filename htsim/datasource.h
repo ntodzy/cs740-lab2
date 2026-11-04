@@ -57,6 +57,7 @@ class DataSource : public EventSource, public PacketSink
         PacketFlow _flow;
 
         uint32_t _node_id;
+        uint64_t _generatorFlowId = 0; // Stable across recording modes and simulator object IDs.
 };
 
 #endif /* DATASOURCE_H */

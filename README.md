@@ -92,6 +92,7 @@ experiment prints the available experiment numbers.
 | `--expt` | `0` | Experiment: `1` single link, `2` CONGA, or `3` fat tree. `0` prints usage. |
 | `--rngseed` | `1729` | Seed for flow arrivals, sizes, endpoints, and randomized routes. |
 | `--logfile` | `data/htsim-log` | Output prefix for the binary `.trace` and text `.id` files. |
+| `--verbose` | `0` | `1` restores per-flow creation/completion/live-flow diagnostics, queue samples, and progress output. Structured experiment-2 records remain enabled in both modes. |
 
 #### Experiment 1: single link
 
@@ -216,11 +217,21 @@ Experiment 2 also writes these files alongside the `--logfile` prefix:
 
 | File suffix | Contents |
 |---|---|
+| `.flows.csv` | One record per completed flow: mode, workload, offered load, traffic/routing seeds, generator flow ID, endpoints, size in bytes, start/finish/FCT in microseconds. |
+| `.run.json` | Effective run configuration (including topology, transport, queue, DRE, seeds, and duration), generated/completed/incomplete/route-violation counts, actual final simulation time, and event count. |
 | `.routes.csv` | Flow sequence ID (matching the number in `srcN`), source/destination host, and chosen core; `-1` means same-leaf traffic. |
 | `.links.csv` | Each directional queue's rate, enqueue/departure/drop packet and byte counts, and measured utilization fraction. Counters include data and ACK packets. |
 | `.summary.csv` | Generated, completed, and incomplete flow counts, plus `route_violations` (fabric departures using a different core than earlier packets/ACKs of that flow; expected zero). |
 | `.decisions.csv` | One routing decision per generated flow: mode, timestamp, endpoints/leaves, path ID, source uplink, local/remote metric, remote validity, and combined score. Direct routes have blank congestion fields. |
 | `.selections.csv` | Selection counts grouped by mode, leaf pair, path ID, and uplink, including the number selected without fresh remote feedback. |
+
+The default console output is one generated/completed/incomplete summary line.
+Use `--verbose=1` for the previous streaming diagnostics. `.flows.csv` is buffered
+as completions occur and flushed at the end; it does not retain completed flows
+in memory. Flow IDs match `.routes.csv` and `.decisions.csv`, including when
+completion order differs from creation order. These records cover TCP/DCTCP,
+TIMELY, and packet-pair transports. Unfinished flows have no completed-flow row;
+their count is retained in `.run.json` and `.summary.csv`.
 
 Statistics are flushed after the simulation event loop. Utilization is
 departed bytes × 8 divided by link rate × elapsed simulation time; generated
@@ -425,6 +436,34 @@ You will evaluate your own implementation in detail and compare with the ECMP. Y
 Specifically, you will provide **12 figures (3 figs for each workload)** with load (from 10%-100%) as x-axis and the average flow completion time (FCT) as y-axis. You can find a similar figure in the CONGA paper (fig10). Please compare with ECMP and discuss why your solution outperforms/underperforms ECMP.
 
 ---
+
+### Evaluation and test selection
+
+The Python suite uses structured files directly and needs no third-party packages.
+From the repository root:
+
+```bash
+bash evaluation/run.sh init
+bash evaluation/run.sh list
+bash evaluation/run.sh test output conga evaluation
+bash evaluation/run.sh evaluate --distribution all --duration 5 \
+  --seeds 1729 12314 42 --jobs 2 --output logs/final
+```
+
+The evaluation command sweeps loads 10%–100% for both policies and creates
+**12 SVG figures**: all, small (`<100000` bytes), and large (`>=100000` bytes)
+flows for each of `uniform`, `pareto`, `enterprise`, and `datamining`. Each figure
+compares average completed-flow FCT against load for ECMP and CONGA. Multiple
+seeds are weighted equally in the plotted run means. Raw records, commands,
+aggregate CSVs, and a measured comparison report are retained. The report labels
+possible explanations as inferences; check completion fractions before attributing
+a difference to load balancing. The full command runs 240 simulations and can
+take hours. Add `--small` and select one distribution for development.
+Use `--jobs N` to run independent simulations concurrently (default 1); begin
+with two workers and allow for higher memory use at larger loads/durations.
+The manifest records concurrency, `.timing.json` records each new run's elapsed
+time, and `--resume` reuses completed runs after an interruption.
+See [evaluation/README.md](evaluation/README.md) for options and interpretation.
 
 ## Submission Instructions
 

@@ -103,13 +103,18 @@ independence, traffic RNG isolation, all workloads, and decision/counter consist
 
 ## 8. Add experiment output
 
-- [ ] Emit one machine-readable record per completed flow: mode, workload, load, seed, flow ID, source, destination, size, start, finish, and FCT.
-- [ ] Emit generated/completed/incomplete counts and run configuration.
-- [ ] Categorize `<100000` bytes as small and `>=100000` bytes as large.
-- [ ] Add a script to aggregate average FCT and preserve raw results.
-- [ ] Add a plotting script for ECMP versus CONGA.
+- [x] Emit one machine-readable record per completed flow: mode, workload, load, seed, flow ID, source, destination, size, start, finish, and FCT (`<logfile>.flows.csv`, default in experiment 2; use `--verbose=1` for streaming diagnostics).
+- [x] Emit generated/completed/incomplete counts and run configuration (`<logfile>.run.json`; counts also remain in `.summary.csv`).
+- [x] Categorize `<100000` bytes as small and `>=100000` bytes as large (`evaluation/evaluate.py`; empty categories stay missing rather than zero).
+- [x] Add a script to aggregate average FCT and preserve raw results (`aggregate.csv`, raw CSV/JSON files, and command manifest).
+- [x] Add a plotting script for ECMP versus CONGA (12 labeled SVG figures plus `comparison.md`; selectable suites through `bash evaluation/run.sh`).
 
 **Done when:** one command can produce a CSV and a plot without parsing unrelated diagnostics.
+
+Validated with an 80-run small-topology sweep (all four workloads, loads 0.1–1.0,
+both modes, seed 12314, duration 1). Development figures and discussion are in
+`logs/evaluation-small/comparison.md`. The full-topology, repeated-seed lab matrix
+below remains outstanding.
 
 ## 9. Run the evaluation matrix
 

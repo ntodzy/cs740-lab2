@@ -2,6 +2,7 @@
  * Loggers
  */
 #include "loggers.h"
+#include "stats/output-options.h"
 #include "prof.h"
 
 using namespace std;
@@ -58,7 +59,7 @@ QueueLoggerSampling::doNextEvent()
     _logfile->writeRecord(QUEUE_RECORD, _queue->id, CUM_TRAFFIC, _cumarr, _cumidle, _cumdrop);
 
 #if MING_PROF
-    _queue->printStats();
+    if (output::verbose()) _queue->printStats();
 #endif
 }
 

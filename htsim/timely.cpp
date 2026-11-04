@@ -1,4 +1,5 @@
 #include "timely.h"
+#include "stats/output-options.h"
 #include "flow-generator.h"
 
 #define TRACE_FLOW 0 && "timelySrc27"
@@ -55,8 +56,10 @@ TimelySrc::doNextEvent()
     simtime_picosec current_ts = EventList::Get().now();
 
     if (TRACE_FLOW == str()) {
-        cout << str() << " EV " << timeAsUs(current_ts) << " " << _state << " "
-             << timeAsUs(_rto_timeout) << " " << _flow._nPackets << endl;
+        if (output::verbose()) {
+            cout << str() << " EV " << timeAsUs(current_ts) << " " << _state << " "
+                 << timeAsUs(_rto_timeout) << " " << _flow._nPackets << endl;
+        }
     }
 
     // If this is the first transmission, send a packet-pair, set rto and return.
@@ -82,13 +85,15 @@ TimelySrc::doNextEvent()
     // Retransmission timeout.
     else if (_rto_timeout != 0 && current_ts >= _rto_timeout) {
 
-        cout << str() << " at " << timeAsMs(current_ts)
-             << " RTO " << timeAsUs(_rto)
-             << " MDEV " << timeAsUs(_mdev)
-             << " RTT "<< timeAsUs(_rtt)
-             << " SEQ " << _last_acked
-             << " RTO_timeout " << timeAsMs(_rto_timeout)
-             << " STATE " << _state << endl;
+        if (output::verbose()) {
+            cout << str() << " at " << timeAsMs(current_ts)
+                 << " RTO " << timeAsUs(_rto)
+                 << " MDEV " << timeAsUs(_mdev)
+                 << " RTT "<< timeAsUs(_rtt)
+                 << " SEQ " << _last_acked
+                 << " RTO_timeout " << timeAsMs(_rto_timeout)
+                 << " STATE " << _state << endl;
+        }
 
         _recover_seq = _highest_sent;
         _highest_sent = _last_acked + MSS_BYTES;
@@ -135,20 +140,24 @@ TimelySrc::receivePacket(Packet& pkt)
         }
         _state = FINISH;
 
-        cout << setprecision(6) << "Flow " << str() << "-" << id << " size " << _flowsize
-             << " start " << lround(timeAsUs(_start_time)) << " end " << lround(timeAsUs(current_ts))
-             << " fct " << timeAsUs(current_ts - _start_time)
-             << " sent " << _highest_sent << " " << _packets_sent - _highest_sent
-             << " rate " << _flowsize * 8000.0 / (current_ts - _start_time)
-             << " bdp " << _bdp_estimate
-             << " minrtt " << _min_rtt << endl;
+        if (output::verbose()) {
+            cout << setprecision(6) << "Flow " << str() << "-" << id << " size " << _flowsize
+                 << " start " << lround(timeAsUs(_start_time)) << " end " << lround(timeAsUs(current_ts))
+                 << " fct " << timeAsUs(current_ts - _start_time)
+                 << " sent " << _highest_sent << " " << _packets_sent - _highest_sent
+                 << " rate " << _flowsize * 8000.0 / (current_ts - _start_time)
+                 << " bdp " << _bdp_estimate
+                 << " minrtt " << _min_rtt << endl;
+        }
 
         return;
     }
 
     // Delayed / reordered ack. Shouldn't happen for simple queues.
     if (seqno < _last_acked) {
-        cout << str() << " ACK from the past: seqno " << seqno << " _last_acked " << _last_acked << endl;
+        if (output::verbose()) {
+            cout << str() << " ACK from the past: seqno " << seqno << " _last_acked " << _last_acked << endl;
+        }
         return;
     }
 
@@ -228,9 +237,11 @@ TimelySrc::receivePacket(Packet& pkt)
     }
 
     if (TRACE_FLOW == str()) {
-        cout << str() << " RECV " << timeAsMs(current_ts) << " " << seqno << " " << timeAsUs(_rtt_gradient)
-             << " rtt/min/diff: " << timeAsUs(_rtt) << " " << timeAsUs(_min_rtt) << " " << _rtt_gradient
-             << " rate: " << _rate << " bdp " << _bdp_estimate << " " << timeAsUs(new_rtt) << endl;
+        if (output::verbose()) {
+            cout << str() << " RECV " << timeAsMs(current_ts) << " " << seqno << " " << timeAsUs(_rtt_gradient)
+                 << " rtt/min/diff: " << timeAsUs(_rtt) << " " << timeAsUs(_min_rtt) << " " << _rtt_gradient
+                 << " rate: " << _rate << " bdp " << _bdp_estimate << " " << timeAsUs(new_rtt) << endl;
+        }
     }
 
 
@@ -259,8 +270,10 @@ TimelySrc::receivePacket(Packet& pkt)
         } else {
             // Resume nomal service.
             if (TRACE_FLOW == str()) {
-                cout << str() << " at " << timeAsMs(current_ts) << " exiting FR "
-                    << _recover_seq << " " << seqno << endl;
+                if (output::verbose()) {
+                    cout << str() << " at " << timeAsMs(current_ts) << " exiting FR "
+                         << _recover_seq << " " << seqno << endl;
+                }
             }
             _dupacks = 0;
             _state = NORMAL;
@@ -293,8 +306,10 @@ TimelySrc::receivePacket(Packet& pkt)
     retransmitPacket(current_ts);
 
     if (TRACE_FLOW == str()) {
-        cout << str() << " FASTXMIT " << timeAsMs(current_ts) << " entering FR "
-             << _recover_seq << " " << seqno << endl;
+        if (output::verbose()) {
+            cout << str() << " FASTXMIT " << timeAsMs(current_ts) << " entering FR "
+                 << _recover_seq << " " << seqno << endl;
+        }
     }
 }
 
@@ -312,8 +327,10 @@ TimelySrc::sendPackets(simtime_picosec current_ts)
     }
 
     if (TRACE_FLOW == str()) {
-        cout << str() << " SEND: " << timeAsMs(current_ts) << " " << _highest_sent
-             << " " << _last_acked << " " << (_highest_sent - _last_acked) << endl;
+        if (output::verbose()) {
+            cout << str() << " SEND: " << timeAsMs(current_ts) << " " << _highest_sent
+                 << " " << _last_acked << " " << (_highest_sent - _last_acked) << endl;
+        }
     }
 
     DataPacket *p;
@@ -334,7 +351,9 @@ void
 TimelySrc::retransmitPacket(simtime_picosec current_ts)
 {
     if (TRACE_FLOW == str()) {
-        cout << str() << " RETX: " << timeAsMs(current_ts) << " " << _last_acked << endl;
+        if (output::verbose()) {
+            cout << str() << " RETX: " << timeAsMs(current_ts) << " " << _last_acked << endl;
+        }
     }
 
     DataPacket *p;
@@ -371,7 +390,9 @@ TimelySink::receivePacket(Packet& pkt)
     p->free();
 
     if (TRACE_FLOW == _src->str()) {
-        cout << str() << " SINK-TS: " << timeAsMs(EventList::Get().now()) << " at " << seqno << endl;
+        if (output::verbose()) {
+            cout << str() << " SINK-TS: " << timeAsMs(EventList::Get().now()) << " at " << seqno << endl;
+        }
     }
 
     ack->flow().logTraffic(*ack, *this, TrafficLogger::PKT_CREATESEND);

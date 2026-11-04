@@ -13,9 +13,11 @@
 #include "timely.h"
 #include "workloads.h"
 #include "prof.h"
+#include "stats/flow-record.h"
 
 #include <deque>
 #include <functional>
+#include <utility>
 
 // First argument is the generator-owned flow sequence, independent of recording.
 typedef std::function<void(uint64_t, route_t *&, route_t *&, uint32_t &, uint32_t &)> route_gen_t;
@@ -44,6 +46,9 @@ class FlowGenerator : public EventSource
 
         // Opt-in leaf addressing for experiment 2's contiguous host numbering.
         void setServersPerLeaf(uint32_t count) { _serversPerLeaf = count; }
+        void setCompletionCallback(std::function<void(const FlowCompletion &)> callback) {
+            _completionCallback = std::move(callback);
+        }
 
         /* Used by Source to notify the Generator of flow finishing, which can then
          * (optionally) generate a new flow. */
@@ -92,6 +97,7 @@ class FlowGenerator : public EventSource
         // Custom flow size distribution.
         std::map<double,uint64_t> _flowSizeCDF;
         uint32_t _serversPerLeaf = 0; // Zero leaves metadata disabled in other experiments.
+        std::function<void(const FlowCompletion &)> _completionCallback;
 };
 
 #endif /* FLOW_GENERATOR_H */

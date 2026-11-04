@@ -2,6 +2,7 @@
  * Flow generator
  */
 #include "flow-generator.h"
+#include "stats/output-options.h"
 
 using namespace std;
 
@@ -99,7 +100,7 @@ void
 FlowGenerator::doNextEvent()
 {
     if (EventList::Get().now() == _endTime) {
-        dumpLiveFlows();
+        if (output::verbose()) dumpLiveFlows();
         return;
     }
 
@@ -188,6 +189,7 @@ FlowGenerator::createFlow(uint64_t flowSize,
     src->setName(_prefix + "src" + to_string(_flowsGenerated));
     snk->setName(_prefix + "snk" + to_string(_flowsGenerated));
     src->_node_id = src_node;
+    src->_generatorFlowId = flowId;
     snk->_node_id = dst_node;
     if (_serversPerLeaf != 0) {
         src->_flow.setCongaLeafIds(src_node / _serversPerLeaf, dst_node / _serversPerLeaf);
@@ -208,9 +210,16 @@ FlowGenerator::createFlow(uint64_t flowSize,
 void
 FlowGenerator::finishFlow(uint32_t flow_id)
 {
-    if (_liveFlows.erase(flow_id) == 0) {
+    const auto entry = _liveFlows.find(flow_id);
+    if (entry == _liveFlows.end()) {
         return;
     }
+    const DataSource &source = *entry->second;
+    if (_completionCallback) {
+        _completionCallback(FlowCompletion{source._generatorFlowId, source._node_id,
+            source._sink->_node_id, source._flowsize, source._start_time, EventList::Get().now()});
+    }
+    _liveFlows.erase(entry);
 
     if (_replaceFlow) {
         uint64_t flowSize = _workload.generateFlowSize();

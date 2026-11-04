@@ -3,4 +3,6 @@
 /htsim/data/htsim-log.trace
 htsim/htsim
 logs/
+__pycache__/
+*.pyc
 htsim/data/

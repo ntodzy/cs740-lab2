@@ -5,6 +5,7 @@
 #include "eventlist.h"
 #include "logfile.h"
 #include "test.h"
+#include "stats/output-options.h"
 
 using namespace std;
 
@@ -25,6 +26,15 @@ main(int argc,
 {
     ArgList args;
     parseArgs(argc, argv, args);
+    const auto verbosity = args.find("verbose");
+    if (verbosity != args.end() && verbosity->second != "0" && verbosity->second != "1") {
+        cerr << "verbose must be 0 or 1\n";
+        return 1;
+    }
+    output::setVerbose(verbosity != args.end() && verbosity->second == "1");
+    if (output::verbose()) {
+        for (const auto &arg : args) cerr << arg.first << " : " << arg.second << '\n';
+    }
 
     string logpath = "data/htsim-log";
     if (args.find("logfile") != args.end()) {
@@ -59,7 +69,7 @@ main(int argc,
         finish_conga_testbed();
     }
 
-    cerr << "\nExiting successfully!" << endl;
+    if (output::verbose()) cerr << "\nExiting successfully!" << endl;
     return 0;
 }
 
@@ -78,7 +88,6 @@ parseArgs(int argc,
         string arg = string(argv[i] + 2, tok - argv[i] - 2);
         string val = string(tok + 1);
 
-        cerr << arg << " : " << val << endl;
         args[arg] = val;
     }
     return 0;

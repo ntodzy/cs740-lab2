@@ -27,7 +27,7 @@ function run(name, options = {}) {
     assert.equal(result.status, 0, result.stderr || String(result.error));
     writeFileSync(`${prefix}.stdout`, result.stdout);
     const records = Object.fromEntries(
-        ['links', 'routes', 'summary', 'decisions', 'selections']
+        ['links', 'routes', 'summary', 'decisions', 'selections', 'flows']
             .map(k => [k, csv(`${prefix}.${k}.csv`)]));
     assert.ok(records.decisions.every(decision => decision.mode === flags.lb),
         'Decision diagnostics recorded the wrong load-balancer mode');
@@ -37,7 +37,7 @@ function run(name, options = {}) {
 function check({records, output}, cores, leaves, servers) {
     const summary = records.summary[0];
     assert.equal(+summary.generated, records.routes.length);
-    assert.equal(+summary.completed, (output.match(/\bFlow src/g) || []).length);
+    assert.equal(+summary.completed, records.flows.length);
     assert.ok(+summary.completed > 0);
     assert.equal(+summary.completed + +summary.incomplete, +summary.generated);
     assert.equal(+summary.route_violations, 0);

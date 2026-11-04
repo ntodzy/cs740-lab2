@@ -13,7 +13,18 @@
 #include <tuple>
 #include <memory>
 
-// Counters only: no periodic sampling or per-packet disk output.
+struct RunConfiguration {
+    std::string mode, workload, endhost, queue;
+    double load = 0;
+    uint32_t seed = 0, routingSeed = 0, durationSeconds = 0, flowsizeBytes = 0;
+    bool small = false, verbose = false;
+    uint32_t cores = 0, leaves = 0, serversPerLeaf = 0;
+    linkspeed_bps serverLinkBps = 0, fabricLinkBps = 0;
+    double linkDelayUs = 0, dreIntervalUs = 0, dreAlpha = 0;
+    uint32_t dreLevels = 8;
+};
+
+// Aggregate link counters and structured run/flow output; no per-packet disk writes.
 class ExperimentStats : public QueueLogger
 {
 public:
@@ -24,6 +35,8 @@ public:
     void logQueue(Queue &queue, QueueEvent event, Packet &packet) override;
     void recordRoute(uint64_t flowId, uint32_t source, uint32_t destination, int core);
     void recordDecision(const RouteDecision &decision);
+    void configureRun(const RunConfiguration &config);
+    void recordCompletion(const FlowCompletion &flow);
     void write(const FlowGenerator &generator, simtime_picosec endTime);
 
 private:
@@ -60,8 +73,12 @@ private:
     std::vector<RouteDecision> _decisions;
     std::map<SelectionKey, SelectionCount> _selections;
     uint64_t _routeViolations = 0;
+    uint64_t _completedRecords = 0;
+    bool _configured = false;
+    RunConfiguration _config;
     std::ofstream _linkFile, _routeFile, _summaryFile;
     std::ofstream _decisionFile, _selectionFile;
+    std::ofstream _flowFile, _runFile;
 };
 
 #endif
