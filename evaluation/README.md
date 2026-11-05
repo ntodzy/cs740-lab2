@@ -36,6 +36,10 @@ bash evaluation/run.sh evaluate --distribution pareto --small \
 bash evaluation/run.sh evaluate --distribution all --duration 0.1 \
   --seeds 1729 --jobs 24 --output logs/fractional
 
+# Experiment 4: 20 Gbps fabric links, 4:3 oversubscription on the full topology.
+bash evaluation/run.sh evaluate --oversubscription --distribution all \
+  --duration 0.1 --seeds 1729 --jobs 24 --output logs/oversubscribed
+
 # Recompute statistics and plots without rerunning simulations.
 bash evaluation/run.sh aggregate --input logs/final
 ```
@@ -48,6 +52,16 @@ number of seconds, including fractions such as `0.1` or `0.25` (the cutoff must
 extend past the simulator's 1 microsecond flow-generation start).
 `--flowsize` sets the uniform/Pareto average in bytes; enterprise
 and datamining use their built-in distributions.
+
+`--oversubscription` selects experiment 4 (`test_conga_testbed_oversubscription.cpp`).
+It keeps the 12 cores, 24 leaves, 32 servers per leaf, and 10 Gbps server links,
+and reduces both fabric directions to 20 Gbps per link. Full leaf capacity is
+320 Gbps server-facing versus 240 Gbps uplink capacity (4:3 oversubscription).
+Without this flag the runner uses experiment 2's 40 Gbps fabric links.
+Use a separate output directory for the two experiments. Resume validates both
+the experiment number and link rate; aggregation rejects incompatible runs.
+Plots label the full oversubscribed topology. `--small` still uses a reduced
+debug topology; its two hosts per leaf do not reproduce full oversubscription.
 
 Each paired run receives the same traffic and routing seeds. Routing seeds
 default to the traffic seed; `--routing-seed 42` fixes that seed separately.

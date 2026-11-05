@@ -166,6 +166,8 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(args.distribution, "all")
         self.assertEqual(args.loads, [i / 10 for i in range(1, 11)])
         self.assertEqual(args.jobs, 1)
+        self.assertFalse(args.oversubscription)
+        self.assertTrue(evaluate.parser().parse_args(["run", "--oversubscription"]).oversubscription)
         self.assertEqual(evaluate.parser().parse_args(["run", "--jobs", "4"]).jobs, 4)
         for value in ("0", "-1"):
             with self.assertRaises(Exception):
@@ -191,6 +193,15 @@ class EvaluationTests(unittest.TestCase):
         self.assertIsNotNone(evaluate.reusable_run(metadata, {"duration_seconds": 0.1}))
         with self.assertRaisesRegex(ValueError, "Unexpected simulator configuration"):
             evaluate.reusable_run(metadata, {"duration_seconds": 1})
+
+    def test_oversubscription_metadata_and_resume_isolation(self):
+        path = self.run_files("ecmp")
+        with self.assertRaisesRegex(ValueError, "Unexpected simulator configuration"):
+            evaluate.reusable_run(path, {"experiment": 4, "fabric_link_bps": 20000000000})
+        config = dict(small=False, experiment=4, cores=12, leaves=24, servers_per_leaf=32)
+        self.assertIn('oversubscribed', evaluate.topology_description(config))
+        config['small'] = True
+        self.assertIn('experiment 4', evaluate.topology_description(config))
 
     def test_parallel_worker_limit_and_timing_records(self):
         barrier = threading.Barrier(2)

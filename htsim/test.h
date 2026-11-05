@@ -16,6 +16,8 @@ typedef std::unordered_map<std::string,std::string> ArgList;
 void single_link_simulation(const ArgList &, Logfile &);
 void conga_testbed(const ArgList &, Logfile &);
 void finish_conga_testbed();
+void conga_testbed_oversubscription(const ArgList &, Logfile &);
+void finish_conga_testbed_oversubscription();
 void fat_tree_testbed(const ArgList &, Logfile &);
 
 inline int 
@@ -39,6 +41,11 @@ run_experiment(uint32_t expt,
             fat_tree_testbed(args, logfile);
             break;
 
+        case 4:
+            // Same endpoints and policies with 20 Gbps fabric links (4:3 oversubscription).
+            conga_testbed_oversubscription(args, logfile);
+            break;
+
         default:
             return -1;
     }
@@ -51,6 +58,7 @@ print_experiment_list()
     std::cerr << "  1" << " single_link_simulation" << std::endl;
     std::cerr << "  2" << " conga_testbed" << std::endl;
     std::cerr << "  3" << " fat_tree_testbed" << std::endl;
+    std::cerr << "  4" << " conga_testbed_oversubscription" << std::endl;
 }
 
 /* Helper functions for parsing arguments. */

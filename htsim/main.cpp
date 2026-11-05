@@ -67,6 +67,8 @@ main(int argc,
 
     if (expt == 2) {
         finish_conga_testbed();
+    } else if (expt == 4) {
+        finish_conga_testbed_oversubscription();
     }
 
     if (output::verbose()) cerr << "\nExiting successfully!" << endl;

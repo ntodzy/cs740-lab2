@@ -1,0 +1,493 @@
+#include "eventlist.h"
+#include "logfile.h"
+#include "aprx-fairqueue.h"
+#include "fairqueue.h"
+#include "priorityqueue.h"
+#include "stoc-fairqueue.h"
+#include "flow-generator.h"
+#include "pipe.h"
+#include "test.h"
+#include "load-balancers/ecmp.h"
+#include "load-balancers/conga.h"
+#include "stats/experiment-stats.h"
+#include "stats/output-options.h"
+#include "congestion/dre-queue-wrapper.h"
+#include "leaf-switches/leafswitch.h"
+
+#include <memory>
+#include <map>
+#include <utility>
+#include <stdexcept>
+
+namespace conga_oversubscription {
+
+const uint32_t N_CORE = 12;
+const uint32_t N_LEAF = 24;
+const uint32_t N_SERVER = 32; // Per leaf.
+
+// Arrays below retain full-topology capacity; only active ports are created.
+struct TopologyConfig {
+    uint32_t cores;
+    uint32_t leaves;
+    uint32_t serversPerLeaf;
+
+    uint32_t nodes() const { return leaves * serversPerLeaf; }
+};
+
+const uint64_t LEAF_BUFFER = 512000;
+const uint64_t CORE_BUFFER = 1024000;
+const uint64_t ENDH_BUFFER = 8192000;
+
+const uint64_t LEAF_SPEED = 10000000000ULL; // 10 Gbps.
+const uint64_t CORE_SPEED = 20000000000ULL; // 20 Gbps. utilizes a 4:3 oversubscription ratio
+const double LINK_DELAY = 0.1;               // Microseconds per direction.
+
+// Every physical link is modeled in both directions. A Queue models the
+// transmitting port and a Pipe models propagation delay.
+Queue *qServerLeaf[N_LEAF][N_SERVER] = {};
+Pipe  *pServerLeaf[N_LEAF][N_SERVER] = {};
+Queue *qLeafServer[N_LEAF][N_SERVER] = {};
+Pipe  *pLeafServer[N_LEAF][N_SERVER] = {};
+
+Queue *qLeafCore[N_LEAF][N_CORE] = {};
+Pipe  *pLeafCore[N_LEAF][N_CORE] = {};
+Queue *qCoreLeaf[N_CORE][N_LEAF] = {};
+Pipe  *pCoreLeaf[N_CORE][N_LEAF] = {};
+DreQueueWrapper *wLeafCore[N_LEAF][N_CORE] = {};
+DreQueueWrapper *wCoreLeaf[N_CORE][N_LEAF] = {};
+LeafSwitch *leafSwitches[N_LEAF] = {};
+// Candidate IDs have meaning only within this topology. Balancers never see
+// the core mapping; cached hop lists avoid rebuilding candidates for every flow.
+std::vector<RoutePath> fabricPaths[N_LEAF][N_LEAF];
+std::map<PathId, uint32_t> coreForPath;
+std::map<PathId, uint32_t> sourceUplinkForPath;
+
+std::shared_ptr<ExperimentStats> runStats;
+FlowGenerator *runGenerator = NULL;
+
+RoutePath buildFabricPath(uint32_t srcLeaf, uint32_t dstLeaf, uint32_t core);
+
+void createQueue(const std::string &queueType,
+                 Queue *&queue,
+                 linkspeed_bps speed,
+                 mem_b buffer);
+void nameObject(Logged &object, const std::string &name, Logfile &logfile,
+                linkspeed_bps speed = LEAF_SPEED, int core = -1,
+                DreQueueWrapper *dre = nullptr);
+void generateRandomRoute(LoadBalancer &loadBalancer,
+                         const TopologyConfig &topology,
+                         ExperimentStats &stats,
+                         const std::string &mode,
+                         uint64_t flowId,
+                         route_t *&fwd,
+                         route_t *&rev,
+                         uint32_t &src,
+                         uint32_t &dst);
+
+} // namespace conga_oversubscription
+
+using namespace std;
+using namespace conga_oversubscription;
+
+void
+conga_testbed_oversubscription(const ArgList &args, Logfile &logfile)
+{
+    double duration = 5;
+    uint32_t avgFlowSize = 100000;
+    double utilization = 0.1;
+    double linkDelay = LINK_DELAY;
+    string queueType = "droptail";
+    string endHost = "dctcp";
+    string flowDist = "uniform";
+    string lb = "ecmp";
+    uint32_t small = 0;
+    uint32_t trafficSeed = 1729;
+    double dreIntervalUs = 20;
+    double dreAlpha = 0.125;
+    uint32_t dreLevels = 8;
+
+    const auto durationArg = args.find("duration");
+    try {
+        if (durationArg != args.end()) {
+            // Reject NaN/Infinity text before parsing: -Ofast assumes finite
+            // arithmetic and may optimize away floating-point finiteness tests.
+            if (durationArg->second.find_first_not_of("0123456789.eE+-") != string::npos) {
+                throw std::invalid_argument("duration");
+            }
+            size_t parsed = 0;
+            duration = std::stod(durationArg->second, &parsed);
+            if (parsed != durationArg->second.size()) throw std::invalid_argument("duration");
+        }
+    } catch (const std::exception &) {
+        cerr << "duration must be a finite number of seconds\n";
+        exit(1);
+    }
+    // timeFromSec uses signed llround internally; validate before conversion.
+    if (duration <= 0 || duration >= double(LLONG_MAX) / 1e12) {
+        cerr << "duration must be positive, finite, and fit signed 64-bit picoseconds\n";
+        exit(1);
+    }
+    const simtime_picosec durationTime = timeFromSec(duration);
+    if (durationTime <= timeFromUs(1) + 1) {
+        cerr << "duration must extend past the 1 us flow-generation start\n";
+        exit(1);
+    }
+    parseInt(args, "flowsize", avgFlowSize);
+    parseDouble(args, "utilization", utilization);
+    parseDouble(args, "linkdelay", linkDelay);
+    parseString(args, "queue", queueType);
+    parseString(args, "endhost", endHost);
+    parseString(args, "flowdist", flowDist);
+    parseString(args, "lb", lb);
+    parseInt(args, "small", small);
+    parseInt(args, "rngseed", trafficSeed);
+    // Independent engine even when the two seeds have the same numeric value.
+    uint32_t routingSeed = trafficSeed;
+    parseInt(args, "routingseed", routingSeed);
+    parseDouble(args, "dre-interval", dreIntervalUs);
+    parseDouble(args, "dre-alpha", dreAlpha);
+    parseInt(args, "dre-levels", dreLevels);
+
+    if (args.find("dre-tau") != args.end()) {
+        cerr << "dre-tau has been replaced by dre-interval and dre-alpha (tau = Tdre / alpha)\n";
+        exit(1);
+    }
+    string dreIntervalText = "20", dreAlphaText = "0.125";
+    parseString(args, "dre-interval", dreIntervalText);
+    parseString(args, "dre-alpha", dreAlphaText);
+    if (dreIntervalText.find_first_not_of("0123456789.eE+-") != string::npos ||
+        dreAlphaText.find_first_not_of("0123456789.eE+-") != string::npos ||
+        dreIntervalUs <= 0 || dreIntervalUs > 1000000 || timeFromUs(dreIntervalUs) == 0 ||
+        !(dreAlpha > 0 && dreAlpha < 1) || dreLevels != 8) {
+        cerr << "dre-interval must be in (0, 1000000] us; 0 < dre-alpha < 1; dre-levels must be 8\n";
+        exit(1);
+    }
+
+    if (small > 1) {
+        cerr << "small must be 0 or 1\n";
+        exit(1);
+    }
+    const TopologyConfig topology = small
+        ? TopologyConfig{2, 2, 2}
+        : TopologyConfig{N_CORE, N_LEAF, N_SERVER};
+
+    if (duration == 0 || !std::isfinite(utilization) || utilization <= 0 ||
+        !std::isfinite(linkDelay) || linkDelay < 0) {
+        cerr << "duration and utilization must be positive; linkdelay cannot be negative\n";
+        exit(1);
+    }
+
+    shared_ptr<LoadBalancer> loadBalancer;
+    if (lb == "ecmp") {
+        loadBalancer = make_shared<EcmpLoadBalancer>(routingSeed);
+    } else if (lb == "conga") {
+        loadBalancer = make_shared<CongaLoadBalancer>(routingSeed);
+        if (output::verbose()) cerr << "CONGA selection: max(local DRE, fresh remote feedback), stable per-flow ties\n";
+    } else {
+        cerr << "Unknown load balancer: " << lb << "; expected ecmp or conga\n";
+        exit(1);
+    }
+
+    string statsPrefix = "data/htsim-log";
+    parseString(args, "logfile", statsPrefix);
+    runStats = make_shared<ExperimentStats>(statsPrefix);
+
+    // Fully connect the active leaves and cores.
+    for (uint32_t leaf = 0; leaf < topology.leaves; leaf++) {
+        leafSwitches[leaf] = new LeafSwitch(leaf, topology.leaves, topology.cores);
+        for (uint32_t core = 0; core < topology.cores; core++) {
+            createQueue(queueType, qLeafCore[leaf][core], CORE_SPEED, LEAF_BUFFER);
+            wLeafCore[leaf][core] = new DreQueueWrapper(*qLeafCore[leaf][core],
+                CORE_SPEED, timeFromUs(dreIntervalUs), dreAlpha, core);
+            nameObject(*qLeafCore[leaf][core],
+                       "q-leaf-core-" + to_string(leaf) + "-" + to_string(core),
+                       logfile, CORE_SPEED, core, wLeafCore[leaf][core]);
+            pLeafCore[leaf][core] = new Pipe(timeFromUs(linkDelay));
+            nameObject(*pLeafCore[leaf][core],
+                       "p-leaf-core-" + to_string(leaf) + "-" + to_string(core),
+                       logfile);
+
+            createQueue(queueType, qCoreLeaf[core][leaf], CORE_SPEED, CORE_BUFFER);
+            wCoreLeaf[core][leaf] = new DreQueueWrapper(*qCoreLeaf[core][leaf],
+                CORE_SPEED, timeFromUs(dreIntervalUs), dreAlpha);
+            nameObject(*qCoreLeaf[core][leaf],
+                       "q-core-leaf-" + to_string(core) + "-" + to_string(leaf),
+                       logfile, CORE_SPEED, core, wCoreLeaf[core][leaf]);
+            pCoreLeaf[core][leaf] = new Pipe(timeFromUs(linkDelay));
+            nameObject(*pCoreLeaf[core][leaf],
+                       "p-core-leaf-" + to_string(core) + "-" + to_string(leaf),
+                       logfile);
+        }
+    }
+
+    // Attach each active server to exactly one leaf with a 10 Gbps link.
+    for (uint32_t leaf = 0; leaf < topology.leaves; leaf++) {
+        for (uint32_t server = 0; server < topology.serversPerLeaf; server++) {
+            createQueue("fq", qServerLeaf[leaf][server], LEAF_SPEED, ENDH_BUFFER);
+            nameObject(*qServerLeaf[leaf][server],
+                       "q-server-leaf-" + to_string(leaf) + "-" + to_string(server),
+                       logfile);
+            pServerLeaf[leaf][server] = new Pipe(timeFromUs(linkDelay));
+            nameObject(*pServerLeaf[leaf][server],
+                       "p-server-leaf-" + to_string(leaf) + "-" + to_string(server),
+                       logfile);
+
+            createQueue(queueType, qLeafServer[leaf][server], LEAF_SPEED, LEAF_BUFFER);
+            nameObject(*qLeafServer[leaf][server],
+                       "q-leaf-server-" + to_string(leaf) + "-" + to_string(server),
+                       logfile);
+            pLeafServer[leaf][server] = new Pipe(timeFromUs(linkDelay));
+            nameObject(*pLeafServer[leaf][server],
+                       "p-leaf-server-" + to_string(leaf) + "-" + to_string(server),
+                       logfile);
+        }
+    }
+
+    // Translate opaque path IDs back to physical cores for CSV statistics.
+    // This topology uses the core number as its path ID; balancers do not
+    // depend on that convention and only return the selected candidate's ID.
+    coreForPath.clear();
+    sourceUplinkForPath.clear();
+    for (uint32_t core = 0; core < topology.cores; ++core) {
+        coreForPath[PathId(core)] = core;
+        sourceUplinkForPath[PathId(core)] = core;
+    }
+
+    // Pre-compute all candidate paths between every pair of leaves.
+    // Cache these once during setup; each flow's balancer later selects a path.
+    for (uint32_t srcLeaf = 0; srcLeaf < topology.leaves; ++srcLeaf) {
+        for (uint32_t dstLeaf = 0; dstLeaf < topology.leaves; ++dstLeaf) {
+            auto &paths = fabricPaths[srcLeaf][dstLeaf]; // Cache for this ordered leaf pair.
+            paths.clear();
+            // Same-leaf hosts use access/delivery links only, so their fabric
+            // cache stays empty. Different leaves require one core in this topology.
+            if (srcLeaf != dstLeaf) {
+                for (uint32_t core = 0; core < topology.cores; ++core) {
+                    // One candidate per core, containing forward and reverse
+                    // fabric hops with their leaf tagging/feedback hooks.
+                    paths.push_back(buildFabricPath(srcLeaf, dstLeaf, core));
+                }
+            }
+        }
+    }
+
+    DataSource::EndHost endpoint = DataSource::TCP;
+    if (endHost == "dctcp") {
+        endpoint = DataSource::DCTCP;
+    } else if (endHost == "timely") {
+        endpoint = DataSource::TIMELY;
+    } else if (endHost == "pp") {
+        endpoint = DataSource::PKTPAIR;
+    } else if (endHost != "tcp") {
+        cerr << "Unknown endhost type: " << endHost << endl;
+        exit(1);
+    }
+
+    Workloads::FlowDist distribution = Workloads::UNIFORM;
+    if (flowDist == "pareto") {
+        distribution = Workloads::PARETO;
+    } else if (flowDist == "enterprise") {
+        distribution = Workloads::ENTERPRISE;
+    } else if (flowDist == "datamining") {
+        distribution = Workloads::DATAMINING;
+    } else if (flowDist != "uniform") {
+        cerr << "Unknown flow distribution: " << flowDist << endl;
+        exit(1);
+    }
+
+    // Offered load is relative to the aggregate 10 Gbps server-facing
+    // capacity. The shared server-to-leaf queues enforce each host's link rate.
+    linkspeed_bps flowRate = llround(utilization * LEAF_SPEED * topology.nodes());
+    // Capture ownership by value: the policy must survive this setup function.
+    auto stats = runStats;
+    route_gen_t fnGenerateRoute = [loadBalancer, topology, stats, lb](uint64_t flowId, route_t *&fwd, route_t *&rev,
+                                               uint32_t &src, uint32_t &dst) {
+        conga_oversubscription::generateRandomRoute(*loadBalancer, topology, *stats, lb, flowId, fwd, rev, src, dst);
+    };
+    FlowGenerator *flowGenerator = new FlowGenerator(endpoint,
+                                                      fnGenerateRoute,
+                                                      flowRate,
+                                                      avgFlowSize,
+                                                      distribution);
+    runGenerator = flowGenerator;
+    RunConfiguration config;
+    config.experiment = 4;
+    config.mode = lb;
+    config.workload = flowDist;
+    config.load = utilization;
+    config.seed = trafficSeed;
+    config.routingSeed = routingSeed;
+    config.durationSeconds = duration;
+    config.flowsizeBytes = avgFlowSize;
+    config.endhost = endHost;
+    config.queue = queueType;
+    config.small = small != 0;
+    config.verbose = output::verbose();
+    config.cores = topology.cores;
+    config.leaves = topology.leaves;
+    config.serversPerLeaf = topology.serversPerLeaf;
+    config.serverLinkBps = LEAF_SPEED;
+    config.fabricLinkBps = CORE_SPEED;
+    config.linkDelayUs = linkDelay;
+    config.dreIntervalUs = dreIntervalUs;
+    config.dreAlpha = dreAlpha;
+    config.dreLevels = dreLevels;
+    stats->configureRun(config);
+    flowGenerator->setCompletionCallback([stats](const FlowCompletion &flow) {
+        stats->recordCompletion(flow);
+    });
+    flowGenerator->setServersPerLeaf(topology.serversPerLeaf);
+    flowGenerator->setTimeLimits(timeFromUs(1), durationTime - 1);
+    EventList::Get().setEndtime(durationTime);
+
+    if (output::verbose()) {
+        cerr << "CONGA oversubscribed topology: " << topology.cores << " cores, " << topology.leaves
+             << " leaves, " << topology.nodes() << " servers" << endl;
+        cerr << "Traffic seed: " << trafficSeed << ", routing seed: " << routingSeed << endl;
+    }
+}
+
+// This topology resolves a candidate into leaf/core queues, pipes, and hooks.
+// Other topologies can supply different hop counts without changing a balancer.
+RoutePath
+conga_oversubscription::buildFabricPath(uint32_t srcLeaf, uint32_t dstLeaf, uint32_t core)
+{
+    RoutePath path;
+    path.pathId = PathId(core);
+    route_t *fwd = &path.forward;
+    route_t *rev = &path.reverse;
+    // Describe this candidate path for all data packets and reverse ACKs
+    // in this flow (the lab treats a whole flow as one flowlet).
+    // push_back() builds the ordered route; it does not send a packet.
+    // Later, packet.sendOn() calls receivePacket() on the next route entry.
+    // Leaf hooks process metadata; the candidate's core is supplied by the topology.
+
+    // Forward data path: source leaf -> selected core -> destination leaf.
+
+    fwd->push_back(&leafSwitches[srcLeaf]->egress()); // Stamp feedback about traffic previously received from the destination.
+    fwd->push_back(wLeafCore[srcLeaf][core]); // Initialize LBTag/CE, enqueue on qLeafCore, then update DRE/CE at service.
+    fwd->push_back(pLeafCore[srcLeaf][core]); // Propagation delay from the source leaf to the selected core.
+    fwd->push_back(wCoreLeaf[core][dstLeaf]); // Enqueue on qCoreLeaf; update this link's DRE and accumulate CE at service.
+    fwd->push_back(pCoreLeaf[core][dstLeaf]); // Propagation delay from the core to the destination leaf
+    // Record the path observation in FromLeaf and apply any carried feedback
+    // to ToLeaf, then forward toward the destination host.
+    fwd->push_back(leafSwitches[dstLeaf]);
+
+
+    // Reverse ACK path: destination leaf -> same core -> original source leaf.
+    rev->push_back(&leafSwitches[dstLeaf]->egress()); // Stamp table-selected feedback about the forward data path.
+    rev->push_back(wLeafCore[dstLeaf][core]); // Start the ACK's own LBTag/CE measurement, preserving stamped feedback;
+    rev->push_back(pLeafCore[dstLeaf][core]); // enqueue on qLeafCore and update DRE/CE when the ACK is transmitted. Propagation delay from the destination leaf to the core.
+    rev->push_back(wCoreLeaf[core][srcLeaf]); // Enqueue toward the original source leaf and accumulate reverse-path CE.
+    rev->push_back(pCoreLeaf[core][srcLeaf]); // Propagation delay from the core to the original source leaf.
+    // Apply returned feedback to ToLeaf and record the ACK path in FromLeaf,
+    // then forward toward the original source host.
+    rev->push_back(leafSwitches[srcLeaf]);
+    return path;
+}
+
+void
+conga_oversubscription::generateRandomRoute(LoadBalancer &loadBalancer,
+                           const TopologyConfig &topology,
+                           ExperimentStats &stats,
+                           const std::string &mode,
+                           uint64_t flowId,
+                           route_t *&fwd,
+                           route_t *&rev,
+                           uint32_t &src,
+                           uint32_t &dst)
+{
+    src = rand() % topology.nodes();
+    do {
+        dst = rand() % topology.nodes();
+    } while (dst == src);
+
+    uint32_t srcLeaf = src / topology.serversPerLeaf;
+    uint32_t dstLeaf = dst / topology.serversPerLeaf;
+    uint32_t srcServer = src % topology.serversPerLeaf;
+    uint32_t dstServer = dst % topology.serversPerLeaf;
+
+    // Traffic generation stays shared. Policies receive opaque candidate paths;
+    // only this topology knows how each path maps onto physical switches.
+    RouteContext context(fabricPaths[srcLeaf][dstLeaf]);
+    context.srcHost = src;
+    context.dstHost = dst;
+    context.srcLeaf = srcLeaf;
+    context.dstLeaf = dstLeaf;
+    context.flowId = flowId;
+    context.now = EventList::Get().now();
+    context.usesFabric = srcLeaf != dstLeaf;
+
+
+    // Queue and Pipe  (q,p) set
+    // Initial setup for forward and reverse routes.
+    context.forward.access = {qServerLeaf[srcLeaf][srcServer], pServerLeaf[srcLeaf][srcServer]};
+    context.forward.delivery = {qLeafServer[dstLeaf][dstServer], pLeafServer[dstLeaf][dstServer]};
+    context.reverse.access = {qServerLeaf[dstLeaf][dstServer], pServerLeaf[dstLeaf][dstServer]};
+    context.reverse.delivery = {qLeafServer[srcLeaf][srcServer], pLeafServer[srcLeaf][srcServer]};
+
+    // Snapshot local and fresh remote state at one timestamp in both modes.
+    // Path IDs identify candidates; uplink tags identify leaf-table cells.
+    context.congestion.reserve(context.paths.size());
+    for (const auto &candidate : context.paths) {
+        const uint32_t uplink = sourceUplinkForPath.at(candidate.pathId);
+        const auto remote = leafSwitches[srcLeaf]->toLeaf(dstLeaf, uplink, context.now);
+        context.congestion.push_back(CandidateCongestion{
+            uplink, wLeafCore[srcLeaf][uplink]->congestionMetric(context.now),
+            remote.metric, remote.valid});
+    }
+    RoutePath path = loadBalancer.selectRoute(context);
+
+    // Statistics consumes an immutable record; it cannot query live tables or rescore.
+    stats.recordDecision(RouteDecision(mode, context, path));
+    fwd = new route_t(std::move(path.forward));
+    rev = new route_t(std::move(path.reverse));
+    // Preserve the existing core-based CSV schema at the topology boundary.
+    const int selectedCore = context.usesFabric
+        ? static_cast<int>(coreForPath.at(path.pathId)) : -1;
+    stats.recordRoute(flowId, src, dst, selectedCore);
+}
+
+void
+conga_oversubscription::createQueue(const string &queueType,
+                   Queue *&queue,
+                   linkspeed_bps speed,
+                   mem_b buffer)
+{
+    // Aggregate counters only; avoid periodic sampling of 2,112 queues.
+    if (queueType == "fq") {
+        queue = new FairQueue(speed, buffer, runStats.get());
+    } else if (queueType == "afq") {
+        queue = new AprxFairQueue(speed, buffer, runStats.get());
+    } else if (queueType == "pq") {
+        queue = new PriorityQueue(speed, buffer, runStats.get());
+    } else if (queueType == "sfq") {
+        queue = new StocFairQueue(speed, buffer, runStats.get());
+    } else if (queueType == "droptail") {
+        queue = new Queue(speed, buffer, runStats.get());
+    } else {
+        cerr << "Unknown queue type: " << queueType << endl;
+        exit(1);
+    }
+}
+
+void
+conga_oversubscription::nameObject(Logged &object, const string &name, Logfile &logfile,
+                   linkspeed_bps speed, int core, DreQueueWrapper *dre)
+{
+    object.setName(name);
+    logfile.writeName(object);
+    Queue *queue = dynamic_cast<Queue*>(&object);
+    if (queue != NULL) {
+        runStats->registerLink(*queue, speed, core, dre);
+    }
+}
+
+// Flush after the event loop, including all events at the simulation cutoff.
+void finish_conga_testbed_oversubscription()
+{
+    conga_oversubscription::runStats->write(*conga_oversubscription::runGenerator, EventList::Get().now());
+    cout << "generated=" << conga_oversubscription::runGenerator->generatedFlows()
+         << " completed=" << conga_oversubscription::runGenerator->generatedFlows() - conga_oversubscription::runGenerator->liveFlows()
+         << " incomplete=" << conga_oversubscription::runGenerator->liveFlows() << '\n';
+}

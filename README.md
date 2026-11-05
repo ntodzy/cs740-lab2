@@ -89,7 +89,7 @@ experiment prints the available experiment numbers.
 
 | Flag | Default | Description |
 |---|---:|---|
-| `--expt` | `0` | Experiment: `1` single link, `2` CONGA, or `3` fat tree. `0` prints usage. |
+| `--expt` | `0` | Experiment: `1` single link, `2` CONGA, `3` fat tree, or `4` oversubscribed CONGA. `0` prints usage. |
 | `--rngseed` | `1729` | Seed for flow arrivals, sizes, endpoints, and randomized routes. |
 | `--logfile` | `data/htsim-log` | Output prefix for the binary `.trace` and text `.id` files. |
 | `--verbose` | `0` | `1` restores per-flow creation/completion/live-flow diagnostics, queue samples, and progress output. Structured experiment-2 records remain enabled in both modes. |
@@ -213,7 +213,7 @@ Run `bash htsim/tests/test-routing-randomness.sh` from the repository root to
 verify engine isolation, repeatable route choices, and identical demands across
 routing seeds for all four workloads. Test artifacts are written under `/tmp`.
 
-Experiment 2 also writes these files alongside the `--logfile` prefix:
+Experiments 2 and 4 write these files alongside the `--logfile` prefix:
 
 | File suffix | Contents |
 |---|---|
@@ -374,6 +374,20 @@ against an 8% per-core deviation bound around an even split.
 | `--endhost` | `dctcp` | `tcp`, `dctcp`, `dtcp`, `ddctcp`, `timely`, or `pp`. |
 | `--lstf` | `0` | Deadline/coflow selector; currently has no effect because that generator is disabled. |
 
+#### Experiment 4: oversubscribed CONGA
+
+`--expt=4` runs `test_conga_testbed_oversubscription.cpp` with the same flags,
+policies, and endpoints as experiment 2, using **20 Gbps** leaf/core links in
+both directions. Each full leaf has 320 Gbps of server-facing capacity and
+240 Gbps of uplink capacity: **4:3 oversubscription**. Experiment 2 retains its
+40 Gbps fabric links. The reduced `--small=1` topology remains a debugging mode
+and does not reproduce the full capacity ratio.
+
+```bash
+./htsim/htsim --expt=4 --lb=conga --duration=0.1 --utilization=0.8 \
+  --logfile=/tmp/conga-oversubscribed
+```
+
 ## Part 2: CONGA implementation
 
 - Your task is to implement CONGA in htsim.
@@ -463,6 +477,9 @@ Use `--jobs N` to run independent simulations concurrently (default 1); begin
 with two workers and allow for higher memory use at larger loads/durations.
 The manifest records concurrency, `.timing.json` records each new run's elapsed
 time, and `--resume` reuses completed runs after an interruption.
+Add `--oversubscription` to evaluate experiment 4, and use a separate output
+directory such as `--output logs/oversubscribed`. The runner checks the experiment
+and link rates before reusing cached runs.
 See [evaluation/README.md](evaluation/README.md) for options and interpretation.
 
 ## Submission Instructions

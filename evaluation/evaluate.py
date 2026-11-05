@@ -180,6 +180,8 @@ def aggregate(directory):
 
 def topology_description(config):
     label = "Small debug" if config["small"] else "Full"
+    if config.get("experiment") == 4:
+        label += " (experiment 4)" if config["small"] else " oversubscribed"
     return (f"{label} topology: {config['cores']} cores, {config['leaves']} leaves, "
             f"{config['servers_per_leaf']} servers/leaf")
 
@@ -323,9 +325,11 @@ def comparison_report(rows, configs=None):
         "paired seeds before attributing a difference to the algorithm.", ""]
     if configs and any(config["small"] for config in configs.values()):
         parts += ["## Small-topology interpretation", "",
-            "The debug topology has two 10 Gbps servers per leaf but each fabric link is 40 Gbps. "
-            "Even all server ingress at one leaf totals only 20 Gbps, so sustained uplink capacity "
-            "contention is unlikely in this topology. CONGA can change transient fabric queueing, "
+            "The debug topology has two 10 Gbps servers per leaf and two fabric links: "
+            "40 Gbps each in experiment 2, or 20 Gbps each in experiment 4. "
+            "Even all server ingress at one leaf totals only 20 Gbps, so this debug topology "
+            "does not reproduce the full experiment's aggregate fabric oversubscription. "
+            "CONGA can change transient fabric queueing, "
             "but it cannot change the selected hosts' shared 10 Gbps access/downlink bottlenecks. "
             "This capacity argument is an architectural explanation for similar ECMP/CONGA FCTs, "
             "not proof of the cause of each measured difference. A single seed cannot establish "
@@ -445,17 +449,20 @@ def run_sweep(args):
     workloads = WORKLOADS if args.distribution == "all" else (args.distribution,)
     if len(set(args.seeds)) != len(args.seeds) or len(set(args.loads)) != len(args.loads):
         raise ValueError("Seeds and loads must not contain duplicates")
+    experiment = 4 if args.oversubscription else 2
+    fabric_rate = 20000000000 if args.oversubscription else 40000000000
     commands = []
     for workload in workloads:
         for load in sorted(args.loads):
             for seed in args.seeds:
                 for mode in MODES:
                     prefix = directory / "raw" / workload / f"load-{load}" / f"seed-{seed}" / mode
-                    flags = {"expt": 2, "lb": mode, "flowdist": workload, "utilization": load,
+                    flags = {"expt": experiment, "lb": mode, "flowdist": workload, "utilization": load,
                              "rngseed": seed, "routingseed": seed if args.routing_seed is None else args.routing_seed,
                              "duration": args.duration, "flowsize": args.flowsize, "small": int(args.small),
                              "endhost": args.endhost, "queue": args.queue, "verbose": 0, "logfile": prefix}
-                    expected = dict(mode=mode, workload=workload, load=load, seed=seed,
+                    expected = dict(experiment=experiment, fabric_link_bps=fabric_rate,
+                        mode=mode, workload=workload, load=load, seed=seed,
                         routing_seed=flags["routingseed"], duration_seconds=args.duration,
                         flowsize_bytes=args.flowsize, small=args.small, endhost=args.endhost, queue=args.queue)
                     commands.append({"prefix": str(prefix), "expected_config": expected, "argv": [str(binary)] +
@@ -464,6 +471,7 @@ def run_sweep(args):
                 "aggregation": "completed flows only; small <100000 bytes, large >=100000; plots average run means"}
     (directory / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"Evaluating {len(commands)} runs on {'small' if args.small else 'full'} topology "
+          f"(experiment {experiment}) "
           f"with up to {args.jobs} parallel jobs", flush=True)
     SimulationRunner(args.jobs, args.resume).run(commands, directory)
     write_results(directory)
@@ -481,6 +489,8 @@ def parser():
                      help="simulated seconds, including fractions such as 0.1")
     run.add_argument("--flowsize", type=positive_uint32, default=100000, help="bytes; empirical workloads use built-in means")
     run.add_argument("--small", action="store_true", help="debug topology; omit for lab figures")
+    run.add_argument("--oversubscription", action="store_true",
+                     help="run experiment 4 with 20 Gbps fabric links (full topology: 4:3 oversubscription)")
     run.add_argument("--queue", choices=("droptail", "fq", "afq", "pq", "sfq"), default="droptail")
     run.add_argument("--endhost", choices=("tcp", "dctcp", "timely", "pp"), default="dctcp")
     run.add_argument("--output", type=Path, default=ROOT / "logs" / "evaluation")

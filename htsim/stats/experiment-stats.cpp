@@ -108,7 +108,7 @@ void ExperimentStats::write(const FlowGenerator &generator, simtime_picosec endT
         // Configured strings are validated enum-like CLI values, not free text.
         _runFile << std::setprecision(17)
             << "{\n  \"schema_version\": 1,\n  \"config\": {\n"
-            << "    \"experiment\": 2,\n    \"mode\": \"" << _config.mode
+            << "    \"experiment\": " << _config.experiment << ",\n    \"mode\": \"" << _config.mode
             << "\",\n    \"workload\": \"" << _config.workload
             << "\",\n    \"load\": " << _config.load
             << ",\n    \"seed\": " << _config.seed

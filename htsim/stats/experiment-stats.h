@@ -14,6 +14,7 @@
 #include <memory>
 
 struct RunConfiguration {
+    uint32_t experiment = 2;
     std::string mode, workload, endhost, queue;
     double load = 0;
     uint32_t seed = 0, routingSeed = 0, flowsizeBytes = 0;

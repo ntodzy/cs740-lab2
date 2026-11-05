@@ -30,12 +30,14 @@ function run(name, options = {}) {
     });
     const {config, counts} = metadata;
     assert.equal(metadata.schema_version, 1);
-    for (const [key, value] of Object.entries({experiment: 2, mode: flags.lb,
+    for (const [key, value] of Object.entries({experiment: flags.expt, mode: flags.lb,
         workload: flags.flowdist, load: flags.utilization, seed: flags.rngseed,
         routing_seed: flags.routingseed, duration_seconds: flags.duration, flowsize_bytes: flags.flowsize,
-        endhost: flags.endhost, queue: 'droptail', small: true, verbose: flags.verbose === 1,
-        cores: 2, leaves: 2, servers_per_leaf: 2, server_link_bps: 10000000000,
-        fabric_link_bps: 40000000000, dre_interval_us: 20, dre_alpha: 0.125, dre_levels: 8})) {
+        endhost: flags.endhost, queue: 'droptail', small: flags.small === 1, verbose: flags.verbose === 1,
+        cores: flags.small ? 2 : 12, leaves: flags.small ? 2 : 24,
+        servers_per_leaf: flags.small ? 2 : 32, server_link_bps: 10000000000,
+        fabric_link_bps: flags.expt === 4 ? 20000000000 : 40000000000,
+        dre_interval_us: 20, dre_alpha: 0.125, dre_levels: 8})) {
         assert.equal(config[key], value, `Incorrect effective configuration: ${key}`);
     }
     assert.equal(counts.completed, flows.length);
@@ -107,4 +109,31 @@ for (const duration of ['0', '-1', 'nan', 'inf', '0.1junk', '0.000001', '1e20'])
 const invalid = spawnSync(join(htsim, 'htsim'), ['--expt=2', '--verbose=banana'], {encoding: 'utf8'});
 assert.equal(invalid.status, 1);
 assert.match(invalid.stderr, /verbose must be 0 or 1/);
+const usage = spawnSync(join(htsim, 'htsim'), [], {encoding: 'utf8'});
+assert.match(usage.stderr, /4\s+conga_testbed_oversubscription/);
+for (const lb of ['ecmp', 'conga']) {
+    const baseline = run('baseline-full-' + lb, {small: 0, duration: 0.002, lb});
+    const oversubscribed = run('oversubscribed-full-' + lb, {expt: 4, small: 0, duration: 0.002, lb});
+    const demands = prefix => readFileSync(prefix + '.routes.csv', 'utf8').trim()
+        .split('\n').slice(1).map(line => line.split(',').slice(0, 3));
+    assert.deepEqual(demands(oversubscribed.prefix), demands(baseline.prefix),
+        'Changing fabric capacity changed the generated endpoints');
+    const config = oversubscribed.metadata.config;
+    assert.equal(config.servers_per_leaf * config.server_link_bps /
+        (config.cores * config.fabric_link_bps), 4 / 3);
+    for (const [simulation, fabricRate] of [[baseline, 40000000000], [oversubscribed, 20000000000]]) {
+        const [header, ...rows] = readFileSync(simulation.prefix + '.links.csv', 'utf8').trim().split('\n');
+        const fields = header.split(',');
+        let fabricLinks = 0;
+        for (const line of rows) {
+            const values = line.split(',');
+            const name = values[fields.indexOf('link')];
+            const fabric = name.startsWith('q-leaf-core-') || name.startsWith('q-core-leaf-');
+            assert.equal(+values[fields.indexOf('bitrate_bps')], fabric ? fabricRate : 10000000000);
+            if (fabric) ++fabricLinks;
+        }
+        assert.equal(fabricLinks, 576);
+    }
+    console.log(`${lb}: experiment 4, full-topology 4:3 capacity, output flushing, and shared demands passed`);
+}
 console.log(`Cutoff accounting and invalid verbosity passed. Artifacts: ${artifacts}`);
