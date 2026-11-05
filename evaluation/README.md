@@ -90,6 +90,24 @@ sequential and parallel execution.
 
 ## Outputs and interpretation
 
+Combine the exported figures into one self-contained SVG, three graphs wide:
+
+```bash
+python3 evaluation/combine_graphs.py --input download --output download/combined.svg
+# Export each workload row to combined-WORKLOAD.svg instead.
+python3 evaluation/combine_graphs.py --input download --separate-rows
+# One workload only: a single three-panel row.
+python3 evaluation/combine_graphs.py --input download --workload uniform \
+  --output download/uniform-combined.svg
+```
+
+Columns are **all, large, small**; the default four rows are uniform, Pareto,
+enterprise, and datamining. Use any evaluation `plots/` directory as input.
+`--separate-rows` creates one three-panel SVG per workload. `--output rows.svg`
+changes their filenames to `rows-uniform.svg`, `rows-pareto.svg`, etc.
+Original graph data, axes, and vector content are preserved. No extra packages
+are required, and input SVGs are not changed.
+
 The default all-workload sweep produces **12 SVG figures** in `plots/`: three
 per workload, for all, small (`<100000` bytes), and large (`>=100000` bytes)
 flows. Each figure plots offered load against average FCT in microseconds,
