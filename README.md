@@ -174,7 +174,7 @@ paths are cached per leaf pair, so their hop lists are not rebuilt per flow.
 
 | Flag | Default | Description |
 |---|---:|---|
-| `--duration` | `5` | Simulation duration in seconds. |
+| `--duration` | `5` | Simulation duration in seconds; fractions such as `0.1` and `0.25` are supported. Must extend past the 1 µs generation start. |
 | `--lb` | `ecmp` | `ecmp` selects a hash-based path; `conga` minimizes the maximum local/remote congestion metric. |
 | `--small` | `0` | `1` uses 2 cores, 2 leaves, and 2 servers per leaf for debugging; `0` uses the required full topology. |
 | `--routingseed` | value of `--rngseed` | Independent seed for load-balancer choices and future tie-breaking. |

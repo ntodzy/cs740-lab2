@@ -16,7 +16,8 @@
 struct RunConfiguration {
     std::string mode, workload, endhost, queue;
     double load = 0;
-    uint32_t seed = 0, routingSeed = 0, durationSeconds = 0, flowsizeBytes = 0;
+    uint32_t seed = 0, routingSeed = 0, flowsizeBytes = 0;
+    double durationSeconds = 0;
     bool small = false, verbose = false;
     uint32_t cores = 0, leaves = 0, serversPerLeaf = 0;
     linkspeed_bps serverLinkBps = 0, fabricLinkBps = 0;

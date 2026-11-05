@@ -17,6 +17,7 @@
 #include <memory>
 #include <map>
 #include <utility>
+#include <stdexcept>
 
 namespace conga {
 
@@ -91,7 +92,7 @@ using namespace conga;
 void
 conga_testbed(const ArgList &args, Logfile &logfile)
 {
-    uint32_t duration = 5;
+    double duration = 5;
     uint32_t avgFlowSize = 100000;
     double utilization = 0.1;
     double linkDelay = LINK_DELAY;
@@ -105,7 +106,32 @@ conga_testbed(const ArgList &args, Logfile &logfile)
     double dreAlpha = 0.125;
     uint32_t dreLevels = 8;
 
-    parseInt(args, "duration", duration);
+    const auto durationArg = args.find("duration");
+    try {
+        if (durationArg != args.end()) {
+            // Reject NaN/Infinity text before parsing: -Ofast assumes finite
+            // arithmetic and may optimize away floating-point finiteness tests.
+            if (durationArg->second.find_first_not_of("0123456789.eE+-") != string::npos) {
+                throw std::invalid_argument("duration");
+            }
+            size_t parsed = 0;
+            duration = std::stod(durationArg->second, &parsed);
+            if (parsed != durationArg->second.size()) throw std::invalid_argument("duration");
+        }
+    } catch (const std::exception &) {
+        cerr << "duration must be a finite number of seconds\n";
+        exit(1);
+    }
+    // timeFromSec uses signed llround internally; validate before conversion.
+    if (duration <= 0 || duration >= double(LLONG_MAX) / 1e12) {
+        cerr << "duration must be positive, finite, and fit signed 64-bit picoseconds\n";
+        exit(1);
+    }
+    const simtime_picosec durationTime = timeFromSec(duration);
+    if (durationTime <= timeFromUs(1) + 1) {
+        cerr << "duration must extend past the 1 us flow-generation start\n";
+        exit(1);
+    }
     parseInt(args, "flowsize", avgFlowSize);
     parseDouble(args, "utilization", utilization);
     parseDouble(args, "linkdelay", linkDelay);
@@ -310,8 +336,8 @@ conga_testbed(const ArgList &args, Logfile &logfile)
         stats->recordCompletion(flow);
     });
     flowGenerator->setServersPerLeaf(topology.serversPerLeaf);
-    flowGenerator->setTimeLimits(timeFromUs(1), timeFromSec(duration) - 1);
-    EventList::Get().setEndtime(timeFromSec(duration));
+    flowGenerator->setTimeLimits(timeFromUs(1), durationTime - 1);
+    EventList::Get().setEndtime(durationTime);
 
     if (output::verbose()) {
         cerr << "CONGA topology: " << topology.cores << " cores, " << topology.leaves

@@ -32,6 +32,10 @@ bash evaluation/run.sh evaluate --distribution all --duration 5 \
 bash evaluation/run.sh evaluate --distribution pareto --small \
   --loads 0.1 0.5 1.0 --output logs/pareto-debug
 
+# Shorter full-topology sweep using fractional simulated seconds.
+bash evaluation/run.sh evaluate --distribution all --duration 0.1 \
+  --seeds 1729 --jobs 24 --output logs/fractional
+
 # Recompute statistics and plots without rerunning simulations.
 bash evaluation/run.sh aggregate --input logs/final
 ```
@@ -40,7 +44,9 @@ Defaults are **all four distributions**, loads **0.1, 0.2, …, 1.0**, ECMP and
 CONGA, one seed (`1729`), duration 1 simulated second, DCTCP, droptail, and the
 full topology. `--workload` is an alias for `--distribution`. Use `--small` for
 development; omit it for the required topology. Duration must be a positive
-whole number. `--flowsize` sets the uniform/Pareto average in bytes; enterprise
+number of seconds, including fractions such as `0.1` or `0.25` (the cutoff must
+extend past the simulator's 1 microsecond flow-generation start).
+`--flowsize` sets the uniform/Pareto average in bytes; enterprise
 and datamining use their built-in distributions.
 
 Each paired run receives the same traffic and routing seeds. Routing seeds

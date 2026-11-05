@@ -398,6 +398,25 @@ void testFeedbackChangesFutureFlow()
             "An existing flow switched uplinks after feedback");
     require(source.received == 2 && source._flow._nPackets == 0,
             "The original flow did not complete its second packet/ACK round trip");
+
+    // Send a new flow on the route chosen after feedback, not just its ID.
+    AckReceiver laterSource;
+    TcpSink laterSink;
+    context.forward.delivery = {&laterSink};
+    context.reverse.delivery = {&laterSource};
+    context.now = EventList::Get().now();
+    refreshFeedback(context, sourceLeaf);
+    RoutePath later = policy.selectRoute(context);
+    require(later.pathId == PathId(103), "New flow did not avoid the reported congested uplink");
+    laterSink.connect(laterSource, later.reverse);
+    data = DataPacket::newpkt(laterSource._flow, later.forward, 1, 1500);
+    data->set_ts(EventList::Get().now());
+    data->sendOn();
+    while (EventList::Get().doNextEvent()) {}
+    require(firstFabric.sentBytes() == 3000 && secondFabric.sentBytes() == 1500,
+            "Selected route ID changed but packets did not use the alternate uplink");
+    require(laterSource.received == 1 && laterSource._flow._nPackets == 0,
+            "New flow did not complete on the feedback-selected route");
 }
 
 void testMetricsFreeRecording(const std::string &prefix)

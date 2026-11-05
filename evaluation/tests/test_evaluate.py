@@ -176,6 +176,22 @@ class EvaluationTests(unittest.TestCase):
         with self.assertRaises(Exception):
             evaluate.positive_uint32("4294967296")
 
+    def test_fractional_durations_and_resume_configuration(self):
+        for value in ("0.1", "0.25", "0.001", "2e-6", "1"):
+            args = evaluate.parser().parse_args(["run", "--duration", value])
+            self.assertEqual(args.duration, float(value))
+        for value in ("0", "-1", "nan", "inf", "1e20", "0.000001", "0.1junk"):
+            with self.subTest(value=value), self.assertRaises((ValueError, evaluate.argparse.ArgumentTypeError)):
+                evaluate.duration_value(value)
+        metadata = self.run_files("ecmp")
+        data = json.loads(metadata.read_text())
+        data['config']['duration_seconds'] = 0.1
+        data['end_time_us'] = 100000
+        metadata.write_text(json.dumps(data))
+        self.assertIsNotNone(evaluate.reusable_run(metadata, {"duration_seconds": 0.1}))
+        with self.assertRaisesRegex(ValueError, "Unexpected simulator configuration"):
+            evaluate.reusable_run(metadata, {"duration_seconds": 1})
+
     def test_parallel_worker_limit_and_timing_records(self):
         barrier = threading.Barrier(2)
         lock = threading.Lock()

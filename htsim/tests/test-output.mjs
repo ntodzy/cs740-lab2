@@ -32,7 +32,7 @@ function run(name, options = {}) {
     assert.equal(metadata.schema_version, 1);
     for (const [key, value] of Object.entries({experiment: 2, mode: flags.lb,
         workload: flags.flowdist, load: flags.utilization, seed: flags.rngseed,
-        routing_seed: flags.routingseed, duration_seconds: 1, flowsize_bytes: flags.flowsize,
+        routing_seed: flags.routingseed, duration_seconds: flags.duration, flowsize_bytes: flags.flowsize,
         endhost: flags.endhost, queue: 'droptail', small: true, verbose: flags.verbose === 1,
         cores: 2, leaves: 2, servers_per_leaf: 2, server_link_bps: 10000000000,
         fabric_link_bps: 40000000000, dre_interval_us: 20, dre_alpha: 0.125, dre_levels: 8})) {
@@ -91,6 +91,19 @@ const truncated = run('truncated', {linkdelay: 1000000});
 assert.ok(truncated.metadata.counts.generated > 0);
 assert.equal(truncated.flows.length, 0, 'Unfinished flows were emitted as completions');
 assert.equal(truncated.metadata.counts.incomplete, truncated.metadata.counts.generated);
+for (const lb of ['ecmp', 'conga']) {
+    const fractional = run('fractional-' + lb, {lb, duration: 0.01});
+    assert.ok(fractional.metadata.counts.generated > 0);
+    assert.ok(fractional.flows.length > 0);
+    assert.ok(Math.abs(fractional.metadata.end_time_us - 10000) < 1e-5,
+        'Fractional duration was truncated or converted incorrectly');
+}
+for (const duration of ['0', '-1', 'nan', 'inf', '0.1junk', '0.000001', '1e20']) {
+    const invalidDuration = spawnSync(join(htsim, 'htsim'), ['--expt=2', '--small=1',
+        `--logfile=${join(artifacts, 'invalid-duration')}`, `--duration=${duration}`], {encoding: 'utf8', timeout: 5000});
+    assert.equal(invalidDuration.status, 1, `Invalid duration accepted: ${duration}`);
+    assert.match(invalidDuration.stderr, /duration/);
+}
 const invalid = spawnSync(join(htsim, 'htsim'), ['--expt=2', '--verbose=banana'], {encoding: 'utf8'});
 assert.equal(invalid.status, 1);
 assert.match(invalid.stderr, /verbose must be 0 or 1/);

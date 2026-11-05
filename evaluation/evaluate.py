@@ -28,6 +28,15 @@ def positive_int(value):
     return number
 
 
+def duration_value(value):
+    seconds = float(value)
+    if not math.isfinite(seconds) or seconds <= 0 or seconds >= ((1 << 63) - 1) / 1e12:
+        raise argparse.ArgumentTypeError("must be positive, finite, and fit signed 64-bit picoseconds")
+    if math.floor(seconds * 1e12 + 0.5) <= 1000001:
+        raise argparse.ArgumentTypeError("must extend past the simulator's 1 us flow-generation start")
+    return seconds
+
+
 def seed_value(value):
     number = int(value)
     if not 0 <= number <= 0xffffffff:
@@ -468,7 +477,8 @@ def parser():
     run.add_argument("--loads", type=load_value, nargs="+", default=[i / 10 for i in range(1, 11)])
     run.add_argument("--seeds", type=seed_value, nargs="+", default=[1729])
     run.add_argument("--routing-seed", type=seed_value)
-    run.add_argument("--duration", type=positive_uint32, default=1, help="whole simulated seconds")
+    run.add_argument("--duration", type=duration_value, default=1.0,
+                     help="simulated seconds, including fractions such as 0.1")
     run.add_argument("--flowsize", type=positive_uint32, default=100000, help="bytes; empirical workloads use built-in means")
     run.add_argument("--small", action="store_true", help="debug topology; omit for lab figures")
     run.add_argument("--queue", choices=("droptail", "fq", "afq", "pq", "sfq"), default="droptail")
